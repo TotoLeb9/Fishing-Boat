@@ -1,0 +1,28 @@
+# Build directories
+Debug/
+Release/
+build/
+.build/
+
+# STM32CubeIDE metadata
+.settings/
+.project
+.cproject
+
+# Generated files
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.s
+
+# IDE
+*.launch
+
+# Backup files
+*~
+*.swp
+*.bak
