@@ -3,7 +3,8 @@ Debug/
 Release/
 build/
 .build/
-
+.metadata
+.mxproject
 # STM32CubeIDE metadata
 .settings/
 .project
