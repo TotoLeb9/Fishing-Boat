@@ -1,14 +1,11 @@
 #ifndef __INA219_H
 #define __INA219_H
 
-#include "stm32f4xx_hal.h" // Adapter si nécessaire (ex: stm32l4xx_hal.h)
+#include "stm32f4xx_hal.h"
 #include <stdio.h>
-// --- Constantes de l'INA219 ---
 
-// Adresse I2C de base de l'INA219 (si A0 et A1 sont à GND)
-#define INA219_I2C_ADDRESS 0x40 << 1 // L'adresse est décalée à gauche pour HAL
+#define INA219_I2C_ADDRESS 0x40 << 1
 
-// Registres
 #define INA219_REG_CONFIG         0x00
 #define INA219_REG_SHUNTVOLTAGE   0x01
 #define INA219_REG_BUSVOLTAGE     0x02
@@ -16,20 +13,17 @@
 #define INA219_REG_CURRENT        0x04
 #define INA219_REG_CALIBRATION    0x05
 
-// --- Structures de données ---
 
 typedef struct {
-    I2C_HandleTypeDef *hi2c; // Pointeur vers le handle I2C de l'STM32
-    float shunt_resistance_ohm; // Résistance de Shunt utilisée (en Ohms)
+    I2C_HandleTypeDef *hi2c;
+    float shunt_resistance_ohm;
 
-    // Variables de calibration calculées (utilisées pour la conversion)
-    float current_lsb; // Least Significant Bit pour le courant (en Ampères/bit)
-    float power_lsb; // Least Significant Bit pour la puissance (en Watts/bit)
+    float current_lsb;
+    float power_lsb;
 
-    uint16_t calibration_value; // Valeur du registre de calibration
+    uint16_t calibration_value;
 } INA219_HandleTypedef;
 
-// --- Prototypes des fonctions ---
 
 /**
  * @brief Initialise le capteur INA219 et calcule les LSBs de conversion.

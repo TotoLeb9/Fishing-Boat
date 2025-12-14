@@ -1,5 +1,5 @@
 #include "nrf.h"
-
+#include "log.h"
 // ============================================================================
 // VARIABLES GLOBALES
 // ============================================================================
@@ -463,4 +463,31 @@ void nrf24_print_status(void (*print_func)(const char*, ...)) {
     print_func("Mode:        %s\r\n", (config & 0x01) ? "RX" : "TX");
     print_func("Power:       %s\r\n", (config & 0x02) ? "UP" : "DOWN");
     print_func("============================\r\n");
+}
+
+void check_config(uint8_t config, uint8_t status, uint8_t fifo, uint8_t en_aa, uint8_t en_rxaddr,uint8_t rx_addr_p0[5]){
+	nrf24_read_register(NRF24_CONFIG, &config, 1);
+	  nrf24_read_register(NRF24_STATUS, &status, 1);
+	  nrf24_read_register(NRF24_FIFO_STATUS, &fifo, 1);
+	  nrf24_read_register(NRF24_EN_AA, &en_aa, 1);
+	  nrf24_read_register(NRF24_EN_RXADDR, &en_rxaddr, 1);
+	  nrf24_read_register(NRF24_RX_ADDR_P0, rx_addr_p0, 5);
+
+	  LOG_INFO("\n=== DIAGNOSTIC RECEPTEUR ===\r\n");
+	  LOG_INFO("CONFIG: 0x%02X ", config);
+	  if (config & 0x01) LOG_INFO("(RX mode OK)\r\n");
+	  else LOG_ERROR("(ERROR: TX mode!)\r\n");
+
+	  LOG_INFO("STATUS: 0x%02X\r\n", status);
+	  LOG_INFO("FIFO_STATUS: 0x%02X\r\n", fifo);
+	  LOG_INFO("EN_AA: 0x%02X\r\n", en_aa);
+	  LOG_INFO("EN_RXADDR: 0x%02X\r\n", en_rxaddr);
+
+	  LOG_INFO("RX_ADDR_P0: %02X:%02X:%02X:%02X:%02X\r\n",
+	         rx_addr_p0[0], rx_addr_p0[1], rx_addr_p0[2],
+	         rx_addr_p0[3], rx_addr_p0[4]);
+
+	  LOG_INFO("Adresse attendue: %02X:%02X:%02X:%02X:%02X\r\n",
+			  rx_addr_p0[0], rx_addr_p0[1], rx_addr_p0[2],
+			  rx_addr_p0[3], rx_addr_p0[4]);
 }

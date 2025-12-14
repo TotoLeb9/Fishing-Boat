@@ -8,6 +8,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -15,6 +16,8 @@
 #include <stdio.h>
 #include <string.h>
 #include "ina219.h"
+#include "motor.h"
+#include "log.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,16 +39,7 @@
 #define DEAD_ZONE 50
 #define MID_LEFT_RIGHT 430
 #define DEBOUNCE_TIME_MS 200
-#define PWM_MIN 1000
-#define PWM_MAX 1300
-#define PWM_NEUTRAL 1150 // Milieu de la plage de vitesse
-#define DEADZONE 3
-#define JOY_MIN 24
-#define JOY_MAX 62
-#define JOY_CENTER 43
-#define DEADZONE_MIN        (JOY_CENTER - JOY_CENTER) // 120
-#define DEADZONE_MAX        (JOY_CENTER + JOY_CENTER) // 134
-
+uint8_t TIMEOUT_INA=5;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -64,6 +58,20 @@ TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart2;
 
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for sendVoltage */
+osThreadId_t sendVoltageHandle;
+const osThreadAttr_t sendVoltage_attributes = {
+  .name = "sendVoltage",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
 /* USER CODE BEGIN PV */
 uint8_t rx_address[5] = {0xE6, 0xE7, 0xE7, 0xE7, 0xE7};
 uint32_t packets_received = 0;
@@ -72,6 +80,9 @@ volatile uint8_t servo_angle_gauche = 180;
 int minimum_servo_gauche = 90;
 volatile uint8_t servo_angle_droit = 0;
 INA219_HandleTypedef ina219_sensor;
+uint8_t config, status, fifo, en_aa, en_rxaddr;
+uint8_t rx_addr_p0[5];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -83,7 +94,15 @@ static void MX_TIM3_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2C1_Init(void);
+void StartDefaultTask(void *argument);
+void StartTask02(void *argument);
+
 /* USER CODE BEGIN PFP */
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
 #ifdef __GNUC__
 int __io_putchar(int ch)
 {
@@ -91,56 +110,18 @@ int __io_putchar(int ch)
     return ch;
 }
 #endif
-/* USER CODE END PFP */
-
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-void Servo_SetAngleGauche(uint8_t angle)
-{
-    // Conversion de l'angle (0–180°) en largeur d'impulsion (500–2500 µs)
-	if (angle < 90){
-		HAL_Delay(10);
-		angle = 180;
-	}
-    uint16_t pulse = 500 + ((2000 * angle) / 180);
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pulse);
-}
-
-void Servo_SetAngleDroit(uint8_t angle)
-{
-	if (angle > 90){
-		HAL_Delay(10);
-		angle = 0;
-	}
-    uint16_t pulse = 500 + ((2000 * angle) / 180);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pulse);
-}
-
-void Servo_SetAngleHam(uint8_t angle)
-{
-    if (angle > 180) angle = 180;
-    uint16_t pulse = 500 + ((2000 * angle) / 180);
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse);
-}
-
-
-void ESC_SetThrottle_D(uint16_t pulse_us)
-{
-    if(pulse_us < 1000) pulse_us = 1000;
-    if(pulse_us > 2000) pulse_us = 2000;
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pulse_us);
-}
-
-void ESC_SetThrottle_G(uint16_t pulse_us)
-{
-    if(pulse_us < 1000) pulse_us = 1000;
-    if(pulse_us > 2000) pulse_us = 2000;
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, pulse_us);
-}
 
 int _write(int file, char *ptr, int len) {
     HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, HAL_MAX_DELAY);
     return len;
+}
+
+void init_tim(void){
+	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
 }
 
 void process_command(uint8_t command) {
@@ -184,74 +165,6 @@ void process_command(uint8_t command) {
     }
 }
 
-uint16_t map_joy_to_pwm(uint8_t joy_y_value)
-{
-
-    const int32_t PWM_RANGE = PWM_MAX - PWM_MIN;
-    int32_t output = ( (int32_t)joy_y_value - JOY_MIN ) * PWM_RANGE;
-    output /= (JOY_MAX - JOY_MIN);
-    output += PWM_MIN;
-    return (uint16_t)output;
-}
-
-int16_t map_value(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max)
-{
-    if (x < in_min) x = in_min;
-    if (x > in_max) x = in_max;
-
-    return (int16_t)((x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min);
-}
-
-void generate_motor_outputs(uint8_t joy_x_value, uint8_t joy_y_value, uint16_t *pwm_g, uint16_t *pwm_d)
-{
-    const uint8_t JOY_CENTER_X = 24;
-    const uint8_t JOY_CENTER_Y = 15;
-    const uint16_t PWM_STOP = 1000;
-    const uint16_t PWM_MAX_THR = 1300;
-    const int16_t STEERING_FORCE = 150;
-
-    int16_t throttle = PWM_STOP;
-    int16_t steering = 0;
-
-    if (joy_y_value > (JOY_CENTER_Y + DEADZONE))
-    {
-        throttle = map_value(joy_y_value, (JOY_CENTER_Y + DEADZONE), JOY_MAX, PWM_STOP, PWM_MAX_THR);
-    }
-
-    if (joy_x_value > (JOY_CENTER_X + DEADZONE))
-    {
-
-        steering = map_value(joy_x_value, (JOY_CENTER_X + DEADZONE), JOY_MAX, 0, STEERING_FORCE);
-    }
-    else if (joy_x_value < (JOY_CENTER_X - DEADZONE))
-    {
-
-        steering = map_value(joy_x_value, JOY_MIN, (JOY_CENTER_X - DEADZONE), -STEERING_FORCE, 0);
-    }
-
-    if (throttle == PWM_STOP) {
-        steering = 0;
-    }
-
-    int32_t motor_g_raw = (int32_t)throttle + steering; // Moteur Gauche
-    int32_t motor_d_raw = (int32_t)throttle - steering; // Moteur Droit
-
-    if (motor_g_raw > PWM_MAX_THR) motor_g_raw = PWM_MAX_THR;
-    if (motor_g_raw < PWM_STOP) motor_g_raw = PWM_STOP;
-
-    if (motor_d_raw > PWM_MAX_THR) motor_d_raw = PWM_MAX_THR;
-    if (motor_d_raw < PWM_STOP) motor_d_raw = PWM_STOP;
-
-    *pwm_g = (uint16_t)motor_g_raw;
-    *pwm_d = (uint16_t)motor_d_raw;
-}
-
-void Handle_Joystick(uint8_t x, uint8_t y){
-	uint16_t pwm = map_joy_to_pwm(y);
-	ESC_SetThrottle_D(pwm);
-	ESC_SetThrottle_G(pwm);
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -290,73 +203,40 @@ int main(void)
   MX_TIM2_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  if (INA219_Init(&ina219_sensor, &hi2c1, 0.1f, 3.2f) != HAL_OK) {
-	  printf("BUG");
+  while (INA219_Init(&ina219_sensor, &hi2c1, 0.1f, 3.2f) != HAL_OK && TIMEOUT_INA>0) {
+	  	  HAL_Delay(1000);
+	  	  TIMEOUT_INA--;
       }
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+
   ESC_SetThrottle_G(1000);
   ESC_SetThrottle_D(1000);
-  HAL_Delay(2000);
+
   Servo_SetAngleGauche(servo_angle_gauche);  // Position initiale 180°
   Servo_SetAngleDroit(servo_angle_droit);    // Position initiale 0°
-  Servo_SetAngleHam(180);
-  printf("\r\n========================================\r\n");
-  printf("     NRF24L01+ - MODE RECEIVER\r\n");
-  printf("========================================\r\n");
+  Servo_SetAngleBas(180);
+
+  LOG_INFO("\r\n========================================\r\n");
+  LOG_INFO("     NRF24L01+ - MODE RECEIVER\r\n");
+  LOG_INFO("========================================\r\n");
   HAL_Delay(500);
-  // Initialisation NRF24
-  printf("Initialisation NRF24...\r\n");
+  LOG_INFO("Initialisation NRF24...\r\n");
   if (nrf24_init(RF_CHANNEL, DATA_RATE, TX_POWER) != 0) {
-      printf("ERROR INIT NRF24\r\n");
+      LOG_ERROR("ERROR INIT NRF24\r\n");
       Error_Handler();
   }
   HAL_Delay(100);
-  // Configuration RX Addresses
   nrf24_set_rx_address(rx_address, 0);
-
-  // Starting listening
   nrf24_start_listening();
 
-  // ✅ DIAGNOSTICS COMPLETS
-  uint8_t config, status, fifo, en_aa, en_rxaddr;
-  uint8_t rx_addr_p0[5];
+#ifdef DEBUG
+   check_config(config,status,fifo,en_aa,en_rxaddr,rx_addr_p0[5]);
+#endif
 
-
-  nrf24_read_register(NRF24_CONFIG, &config, 1);
-  nrf24_read_register(NRF24_STATUS, &status, 1);
-  nrf24_read_register(NRF24_FIFO_STATUS, &fifo, 1);
-  nrf24_read_register(NRF24_EN_AA, &en_aa, 1);
-  nrf24_read_register(NRF24_EN_RXADDR, &en_rxaddr, 1);
-  nrf24_read_register(NRF24_RX_ADDR_P0, rx_addr_p0, 5);
-
-  printf("\n=== DIAGNOSTIC RECEPTEUR ===\r\n");
-  printf("CONFIG: 0x%02X ", config);
-  if (config & 0x01) printf("(RX mode OK)\r\n");
-  else printf("(ERROR: TX mode!)\r\n");
-
-  printf("STATUS: 0x%02X\r\n", status);
-  printf("FIFO_STATUS: 0x%02X\r\n", fifo);
-  printf("EN_AA: 0x%02X\r\n", en_aa);
-  printf("EN_RXADDR: 0x%02X\r\n", en_rxaddr);
-
-  printf("RX_ADDR_P0: %02X:%02X:%02X:%02X:%02X\r\n",
-         rx_addr_p0[0], rx_addr_p0[1], rx_addr_p0[2],
-         rx_addr_p0[3], rx_addr_p0[4]);
-
-  printf("Adresse attendue: %02X:%02X:%02X:%02X:%02X\r\n",
-         rx_address[0], rx_address[1], rx_address[2],
-         rx_address[3], rx_address[4]);
-
-  // Vérifier CE
   if (HAL_GPIO_ReadPin(NRF_CE_GPIO_Port, NRF_CE_Pin) == GPIO_PIN_SET) {
-      printf("CE: HIGH (OK)\r\n");
+      LOG_INFO("CE: HIGH (OK)\r\n");
   } else {
-      printf("CE: LOW (ERROR!)\r\n");
-      printf("Forcing CE HIGH...\r\n");
+      LOG_ERROR("CE: LOW (ERROR!)\r\n");
+      LOG_ERROR("Forcing CE HIGH...\r\n");
       HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
   }
 
@@ -369,6 +249,45 @@ int main(void)
 
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* creation of sendVoltage */
+  sendVoltageHandle = osThreadNew(StartTask02, NULL, &sendVoltage_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
@@ -377,13 +296,11 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    // Looking for available data
-
 	  float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
-	          float I_load = INA219_GetCurrent_A(&ina219_sensor);
-	          float P_load = INA219_GetPower_W(&ina219_sensor);
-	          float Vshunt = INA219_GetShuntVoltage_V(&ina219_sensor);
-	          printf("VBus: %.2f V, I: %.2f A, P: %.2f W\r\n", Vbus, I_load, P_load);
+	  float I_load = INA219_GetCurrent_A(&ina219_sensor);
+	  float P_load = INA219_GetPower_W(&ina219_sensor);
+	  float Vshunt = INA219_GetShuntVoltage_V(&ina219_sensor);
+	  //printf("VBus: %.2f V, I: %.2f A, P: %.2f W\r\n", Vbus, I_load, P_load);
 	  static uint32_t last_status_check = 0;
 	  if (HAL_GetTick() - last_status_check > 2000) {
 	      uint8_t status_check, fifo_check;
@@ -396,8 +313,6 @@ int main(void)
 
 	      last_status_check = HAL_GetTick();
 	  }
-
-	  // Looking for available data
 	  if (nrf24_available()) {
 	      uint8_t buffer[PAYLOAD_SIZE];
 	      memset(buffer, 0, PAYLOAD_SIZE);
@@ -416,27 +331,15 @@ int main(void)
 	              process_command(commande_recue);
 
 	          }
-
 	          else if (buffer[0] == 0xAA) {
-	        	  printf("RX HEADER: 0x%02X | DATA: 0x%02X\r\n", buffer[0], buffer[1]);
 	                  uint8_t val_x = buffer[1];
 	                  uint8_t val_y = buffer[2];
 	                  uint16_t pwm_motor_g, pwm_motor_d;
-
-	                  generate_motor_outputs(val_x, val_y, &pwm_motor_g, &pwm_motor_d);
-	                  //Handle_Joystick(val_x, val_y);
-	                  ESC_SetThrottle_D(pwm_motor_g);
-	                  ESC_SetThrottle_G(pwm_motor_d);
-	                  printf("Joystick -> X: %d | Y: %d\r\n", val_x, val_y);
-
-
-
+	                  Handle_Joystick(val_x, val_y);
 	              }
 	      }
 
 	  }
-
-	  // Timeout if nothing is coming for 5 seconds
 	  if ((HAL_GetTick() - last_received_time) > TIMEOUT) {
 	      printf("[WARNING] No data receive in 5sec\r\n");
 	      printf("  Total receive: %lu packets\r\n\r\n", packets_received);
@@ -843,7 +746,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
@@ -854,6 +757,42 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_StartTask02 */
+/**
+* @brief Function implementing the sendVoltage thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask02 */
+void StartTask02(void *argument)
+{
+  /* USER CODE BEGIN StartTask02 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartTask02 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.

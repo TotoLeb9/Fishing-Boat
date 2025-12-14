@@ -182,5 +182,5 @@ void nrf24_power_up(void);
  */
 void nrf24_print_status(void (*print_func)(const char*, ...));
 void nrf24_read_register(uint8_t reg, uint8_t *data, uint8_t len);
-
+void check_config(uint8_t config, uint8_t status, uint8_t fifo, uint8_t en_aa, uint8_t en_rxaddr,uint8_t rx_addr_p0[5]);
 #endif /* NRF_H */
