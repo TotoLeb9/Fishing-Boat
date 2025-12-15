@@ -16,6 +16,7 @@
 #define NRF24_FLUSH_RX          0xE2  // Vider FIFO RX
 #define NRF24_REUSE_TX_PL       0xE3  // Réutiliser dernier payload TX
 #define NRF24_NOP               0xFF  // No Operation
+#define PAYLOAD_SIZE    32
 
 // ============================================================================
 // REGISTRES NRF24L01+

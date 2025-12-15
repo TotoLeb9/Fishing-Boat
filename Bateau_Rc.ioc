@@ -2,10 +2,9 @@
 CAD.formats=
 CAD.pinconfig=
 CAD.provider=
-FREERTOS.FootprintOK=true
-FREERTOS.IPParameters=Tasks01,configMINIMAL_STACK_SIZE,FootprintOK
-FREERTOS.Tasks01=defaultTask,24,512,StartDefaultTask,Default,NULL,Dynamic,NULL,NULL;sendVoltage,8,512,StartTask02,Default,NULL,Dynamic,NULL,NULL
-FREERTOS.configMINIMAL_STACK_SIZE=512
+FREERTOS.IPParameters=Tasks01,configUSE_NEWLIB_REENTRANT
+FREERTOS.Tasks01=defaultTask,24,128,StartDefaultTask,Default,NULL,Dynamic,NULL,NULL
+FREERTOS.configUSE_NEWLIB_REENTRANT=1
 File.Version=6
 GPIO.groupedBy=Group By Peripherals
 KeepUserPlacement=false

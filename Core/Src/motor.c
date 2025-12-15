@@ -7,23 +7,23 @@
 
 #include "motor.h"
 #include <stdlib.h>
-
+#include <math.h>
 #define PWM_MIN 1000
-#define PWM_MAX 1300
-#define PWM_NEUTRAL 1150
-#define DEADZONE 3
+#define PWM_MAX 1400
+#define PWM_NEUTRAL 1200
+#define DEADZONE 2
 #define JOY_MIN_X 16
 #define JOY_MAX_X 70
-#define JOY_CENTER_X 43
-#define JOY_MIN_Y 24
+#define JOY_CENTER_X 26
+#define JOY_MIN_Y 15
 #define JOY_MAX_Y 63
 #define JOY_CENTER_Y 44
 #define MIX_PERCENT 0.6f
 
+
 void Servo_SetAngleGauche(uint8_t angle)
 {
 	if (angle < 90){
-		HAL_Delay(10);
 		angle = 180;
 	}
     uint16_t pulse = 500 + ((2000 * angle) / 180);
@@ -33,7 +33,6 @@ void Servo_SetAngleGauche(uint8_t angle)
 void Servo_SetAngleDroit(uint8_t angle)
 {
 	if (angle > 90){
-		HAL_Delay(10);
 		angle = 0;
 	}
     uint16_t pulse = 500 + ((2000 * angle) / 180);
@@ -92,51 +91,48 @@ uint16_t map_joy_to_pwm(uint8_t y)
 }
 
 
+float map_to_float(uint8_t val, uint8_t min, uint8_t center, uint8_t max) {
+    int16_t diff = (int16_t)val - center;
+
+    if (abs(diff) <= DEADZONE) return 0.0f;
+
+    if (diff > 0) {
+        float range = (float)(max - center - DEADZONE);
+        if (range <= 0) return 1.0f;
+        float result = (float)(diff - DEADZONE) / range;
+        return (result > 1.0f) ? 1.0f : result;
+    } else {
+        float range = (float)(center - DEADZONE - min);
+        if (range <= 0) return -1.0f;
+        float result = (float)(diff + DEADZONE) / range;
+        return (result < -1.0f) ? -1.0f : result;
+    }
+}
+
 void Handle_Joystick(uint8_t x, uint8_t y)
 {
-    uint16_t pwm_base;
+    float throttle = map_to_float(y, JOY_MIN_Y, JOY_CENTER_Y, JOY_MAX_Y);
+    float turn = map_to_float(x, JOY_MIN_X, JOY_CENTER_X, JOY_MAX_X);
 
+    float left = throttle + (turn * 0.7f);
+    float right = throttle - (turn * 0.7f);
 
-    pwm_base = map_joy_to_pwm(y);
-
-    int16_t raw_delta = (int16_t)x - JOY_CENTER_X;
-    float norm = 0.0f;
-    if (raw_delta > DEADZONE) {
-        float effective_delta = (float)(raw_delta - DEADZONE);
-        float effective_range = (float)(JOY_MAX_X - JOY_CENTER_X - DEADZONE);
-        if (effective_range > 0.0f) {
-             norm = effective_delta / effective_range;
-        } else {
-             norm = 1.0f;
-        }
-    }
-    else if (raw_delta < -DEADZONE) {
-        float effective_delta = (float)(raw_delta + DEADZONE);
-        float effective_range = (float)(JOY_CENTER_X - JOY_MIN_X - DEADZONE);
-        if (effective_range > 0.0f) {
-            norm = effective_delta / effective_range;
-        } else {
-            norm = -1.0f;
-        }
-    }
-    else {
-        norm = 0.0f;
+    float max_val = fmaxf(fabsf(left), fabsf(right));
+    if (max_val > 1.0f) {
+        left /= max_val;
+        right /= max_val;
     }
 
-    if (norm > 1.0f) norm = 1.0f;
-    if (norm < -1.0f) norm = -1.0f;
+    uint16_t pwm_g, pwm_d;
 
-    float correction = norm * MIX_PERCENT * (PWM_MAX - PWM_MIN);
-
-    if (pwm_base == PWM_NEUTRAL && norm == 0.0f) {
-        ESC_SetThrottle_D(PWM_NEUTRAL);
-        ESC_SetThrottle_G(PWM_NEUTRAL);
-        return;
+    if (throttle == 0.0f && turn == 0.0f) {
+        pwm_g = PWM_NEUTRAL;
+        pwm_d = PWM_NEUTRAL;
+    } else {
+        pwm_g = PWM_NEUTRAL + (int16_t)(left * (left > 0 ? (PWM_MAX - PWM_NEUTRAL) : (PWM_NEUTRAL - PWM_MIN)));
+        pwm_d = PWM_NEUTRAL + (int16_t)(right * (right > 0 ? (PWM_MAX - PWM_NEUTRAL) : (PWM_NEUTRAL - PWM_MIN)));
     }
 
-    uint16_t pwm_d = clamp_pwm(pwm_base + (int16_t)correction);
-    uint16_t pwm_g = clamp_pwm(pwm_base - (int16_t)correction);
-
-    ESC_SetThrottle_D(pwm_d);
-    ESC_SetThrottle_G(pwm_g);
+    ESC_SetThrottle_G(pwm_d);
+    ESC_SetThrottle_D(pwm_g);
 }

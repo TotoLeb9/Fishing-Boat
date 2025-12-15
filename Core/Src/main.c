@@ -18,6 +18,8 @@
 #include "ina219.h"
 #include "motor.h"
 #include "log.h"
+#include "rtos_task.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,14 +34,9 @@
 #define TX_POWER        3
 #define PAYLOAD_SIZE    32
 #define TIMEOUT 5000
-#define LED         10
-#define PHARE       20
-#define SERVO_DROIT 30
-#define SERVO_GAUCHE 40
-#define DEAD_ZONE 50
-#define MID_LEFT_RIGHT 430
-#define DEBOUNCE_TIME_MS 200
 uint8_t TIMEOUT_INA=5;
+
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -59,26 +56,13 @@ TIM_HandleTypeDef htim3;
 UART_HandleTypeDef huart2;
 
 /* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
-  .stack_size = 512 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
-/* Definitions for sendVoltage */
-osThreadId_t sendVoltageHandle;
-const osThreadAttr_t sendVoltage_attributes = {
-  .name = "sendVoltage",
-  .stack_size = 512 * 4,
-  .priority = (osPriority_t) osPriorityLow,
-};
+
+
 /* USER CODE BEGIN PV */
 uint8_t rx_address[5] = {0xE6, 0xE7, 0xE7, 0xE7, 0xE7};
 uint32_t packets_received = 0;
 uint32_t last_received_time = 0;
-volatile uint8_t servo_angle_gauche = 180;
-int minimum_servo_gauche = 90;
-volatile uint8_t servo_angle_droit = 0;
+
 INA219_HandleTypedef ina219_sensor;
 uint8_t config, status, fifo, en_aa, en_rxaddr;
 uint8_t rx_addr_p0[5];
@@ -94,8 +78,6 @@ static void MX_TIM3_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2C1_Init(void);
-void StartDefaultTask(void *argument);
-void StartTask02(void *argument);
 
 /* USER CODE BEGIN PFP */
 /* USER CODE END PFP */
@@ -122,47 +104,6 @@ void init_tim(void){
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_4);
 	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-}
-
-void process_command(uint8_t command) {
-	static uint32_t last_phare_time = 0;
-	static uint32_t last_led_time = 0;
-	uint32_t current_time = HAL_GetTick();
-    switch (command) {
-        case SERVO_DROIT:
-            if (servo_angle_gauche > 90) servo_angle_gauche -= 30;
-            else servo_angle_gauche=180;
-            Servo_SetAngleGauche(servo_angle_gauche);
-            printf("Commande : 0x%02X\r\n", command);
-            printf("Servo angle: %d°\r\n", servo_angle_gauche);
-            break;
-
-        case SERVO_GAUCHE:
-                    if (servo_angle_droit < 90) servo_angle_droit += 30;
-                    else servo_angle_droit=0;
-                    Servo_SetAngleDroit(servo_angle_droit);
-                    printf("Commande : 0x%02X\r\n", command);
-                    printf("Servo angle: %d°\r\n", servo_angle_droit);
-                    break;
-        case PHARE:
-        	if (current_time - last_phare_time >= DEBOUNCE_TIME_MS) {
-        	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_12);
-        	printf("Commande : 0x%02X\r\n", command);
-        	last_phare_time = current_time;
-        	}
-        	break;
-        case LED:
-        	if (current_time - last_led_time >= DEBOUNCE_TIME_MS) {
-        	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_8);
-        	printf("Commande  0x%02X\r\n", command);
-        	last_led_time = current_time;
-        	}
-        	break;
-
-        default:
-            printf("Commande inconnue: 0x%02X\r\n", command);
-            break;
-    }
 }
 
 /* USER CODE END 0 */
@@ -207,7 +148,7 @@ int main(void)
 	  	  HAL_Delay(1000);
 	  	  TIMEOUT_INA--;
       }
-
+  init_tim();
   ESC_SetThrottle_G(1000);
   ESC_SetThrottle_D(1000);
 
@@ -226,12 +167,6 @@ int main(void)
   }
   HAL_Delay(100);
   nrf24_set_rx_address(rx_address, 0);
-  nrf24_start_listening();
-
-#ifdef DEBUG
-   check_config(config,status,fifo,en_aa,en_rxaddr,rx_addr_p0[5]);
-#endif
-
   if (HAL_GPIO_ReadPin(NRF_CE_GPIO_Port, NRF_CE_Pin) == GPIO_PIN_SET) {
       LOG_INFO("CE: HIGH (OK)\r\n");
   } else {
@@ -239,11 +174,7 @@ int main(void)
       LOG_ERROR("Forcing CE HIGH...\r\n");
       HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
   }
-
-  printf("RF CHANNEL: %d\r\n", RF_CHANNEL);
-  printf("========================================\r\n");
-  printf("Waiting data..\r\n\r\n");
-
+  nrf24_start_listening();
   last_received_time = HAL_GetTick();
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET);
 
@@ -266,24 +197,28 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
-
-  /* creation of sendVoltage */
-  sendVoltageHandle = osThreadNew(StartTask02, NULL, &sendVoltage_attributes);
-
+  ListeningNrfHandle = osThreadNew(ListeningNrf, NULL, &listener_attr);
+#ifdef DEBUG
+   check_config(config,status,fifo,en_aa,en_rxaddr,rx_addr_p0);
+   DebugNrfFifoHandle = osThreadNew(DebugFifoNrf, NULL, &debugfifo_attr);
+#endif
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
+
   /* USER CODE END RTOS_EVENTS */
 
   /* Start scheduler */
+
   osKernelStart();
 
   /* We should never get here as control is now taken by the scheduler */
@@ -296,56 +231,9 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-	  float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
-	  float I_load = INA219_GetCurrent_A(&ina219_sensor);
-	  float P_load = INA219_GetPower_W(&ina219_sensor);
-	  float Vshunt = INA219_GetShuntVoltage_V(&ina219_sensor);
+	  //float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
+
 	  //printf("VBus: %.2f V, I: %.2f A, P: %.2f W\r\n", Vbus, I_load, P_load);
-	  static uint32_t last_status_check = 0;
-	  if (HAL_GetTick() - last_status_check > 2000) {
-	      uint8_t status_check, fifo_check;
-	      nrf24_read_register(NRF24_STATUS, &status_check, 1);
-	      nrf24_read_register(NRF24_FIFO_STATUS, &fifo_check, 1);
-
-	      printf("[DEBUG] STATUS: 0x%02X | FIFO: 0x%02X | CE: %d\r\n",
-	             status_check, fifo_check,
-	             HAL_GPIO_ReadPin(NRF_CE_GPIO_Port, NRF_CE_Pin));
-
-	      last_status_check = HAL_GetTick();
-	  }
-	  if (nrf24_available()) {
-	      uint8_t buffer[PAYLOAD_SIZE];
-	      memset(buffer, 0, PAYLOAD_SIZE);
-
-	      if (nrf24_read(buffer, PAYLOAD_SIZE)) {
-
-	          if (buffer[0]==0xBB || buffer[0]==0xBA) {
-	        	  printf("RX HEADER: 0x%02X | DATA: 0x%02X\r\n", buffer[0], buffer[1]);
-	              packets_received++;
-	              uint32_t current_time = HAL_GetTick();
-	              uint32_t time_since_last = current_time - last_received_time;
-	              last_received_time = current_time;
-	              printf("RX: 0x%02X | CMD: 0x%02X | Next: 0x%02X\r\n",
-	                                 buffer[0], buffer[1], buffer[2]);
-	              uint8_t commande_recue = buffer[1] & 0xFE;
-	              process_command(commande_recue);
-
-	          }
-	          else if (buffer[0] == 0xAA) {
-	                  uint8_t val_x = buffer[1];
-	                  uint8_t val_y = buffer[2];
-	                  uint16_t pwm_motor_g, pwm_motor_d;
-	                  Handle_Joystick(val_x, val_y);
-	              }
-	      }
-
-	  }
-	  if ((HAL_GetTick() - last_received_time) > TIMEOUT) {
-	      printf("[WARNING] No data receive in 5sec\r\n");
-	      printf("  Total receive: %lu packets\r\n\r\n", packets_received);
-	      last_received_time = HAL_GetTick();
-	  }
-
 
   }
   /* USER CODE END 3 */
@@ -765,34 +653,8 @@ static void MX_GPIO_Init(void)
   * @retval None
   */
 /* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
-{
-  /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END 5 */
-}
 
-/* USER CODE BEGIN Header_StartTask02 */
-/**
-* @brief Function implementing the sendVoltage thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartTask02 */
-void StartTask02(void *argument)
-{
-  /* USER CODE BEGIN StartTask02 */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END StartTask02 */
-}
+
 
 /**
   * @brief  This function is executed in case of error occurrence.
