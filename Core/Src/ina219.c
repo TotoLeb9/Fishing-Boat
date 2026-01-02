@@ -3,7 +3,7 @@
 
 // --- Fonctions utilitaires I2C (Privées) ---
 
-static HAL_StatusTypeDef INA219_WriteReg(INA219_HandleTypedef *handle, uint8_t reg, uint16_t data) {
+ HAL_StatusTypeDef INA219_WriteReg(INA219_HandleTypedef *handle, uint8_t reg, uint16_t data) {
     uint8_t buffer[3];
     buffer[0] = reg;
     buffer[1] = (uint8_t)(data >> 8);
@@ -11,7 +11,7 @@ static HAL_StatusTypeDef INA219_WriteReg(INA219_HandleTypedef *handle, uint8_t r
     return HAL_I2C_Master_Transmit(handle->hi2c, INA219_I2C_ADDRESS, buffer, 3, HAL_MAX_DELAY);
 }
 
-static HAL_StatusTypeDef INA219_ReadReg(INA219_HandleTypedef *handle, uint8_t reg, uint16_t *data) {
+HAL_StatusTypeDef INA219_ReadReg(INA219_HandleTypedef *handle, uint8_t reg, uint16_t *data) {
     HAL_StatusTypeDef status;
     uint8_t buffer[2];
 
@@ -29,45 +29,81 @@ static HAL_StatusTypeDef INA219_ReadReg(INA219_HandleTypedef *handle, uint8_t re
 HAL_StatusTypeDef INA219_Init(INA219_HandleTypedef *handle,
                               I2C_HandleTypeDef *hi2c,
                               float shunt_ohm,
-                              float current_max_amp) {
-    HAL_StatusTypeDef status;
+                              float current_max_amp)
+{
+	handle->hi2c = hi2c;
 
-    handle->hi2c = hi2c;
-    handle->shunt_resistance_ohm = shunt_ohm;
+	    // 0x2192 configure :
+	    // - Range 32V
+	    // - ADC 12-bit (très précis)
+	    // - Mode : Bus Voltage Continuous (le capteur mesure tout seul sans s'arrêter)
+	    uint16_t config = 0x2192;
 
-
-    handle->current_lsb = 0.0001f; // 100 microAmpère/bit
-
-    float cal_float = 0.04096f / (handle->current_lsb * handle->shunt_resistance_ohm);
-    handle->calibration_value = (uint16_t)roundf(cal_float);
-
-    handle->power_lsb = 20.0f * handle->current_lsb;
-
-    status = INA219_WriteReg(handle, INA219_REG_CALIBRATION, handle->calibration_value);
-    if (status != HAL_OK) return status;
-
-    uint16_t config_value =
-          (0b0001 << 13)
-        | (0b0011 << 11)
-        | (0b1001 << 7)
-        | (0b1001 << 3)
-        | (0b0101 << 0);
-
-    status = INA219_WriteReg(handle, INA219_REG_CONFIG, config_value);
-
-    return status;
+	    return INA219_WriteReg(handle, INA219_REG_CONFIG, config);
 }
 
+void INA219_DiagnosticTest(INA219_HandleTypedef *handle) {
+    uint16_t config, bus_raw;
+
+    printf("\r\n=== INA219 DIAGNOSTIC ===\r\n");
+
+    // Lire la configuration actuelle
+    if (INA219_ReadReg(handle, INA219_REG_CONFIG, &config) == HAL_OK) {
+        printf("Config Register: 0x%04X\r\n", config);
+    } else {
+        printf("ERREUR: Impossible de lire CONFIG\r\n");
+    }
+
+    // Lire le registre bus voltage
+    if (INA219_ReadReg(handle, INA219_REG_BUSVOLTAGE, &bus_raw) == HAL_OK) {
+        printf("Bus Voltage RAW: 0x%04X\r\n", bus_raw);
+
+        // Vérifier le bit CNVR (Conversion Ready) - bit 1
+        if (bus_raw & 0x0002) {
+            printf("  -> Conversion Ready: OUI\r\n");
+        } else {
+            printf("  -> Conversion Ready: NON (pas de mesure valide!)\r\n");
+        }
+
+        // Vérifier le bit OVF (Overflow) - bit 0
+        if (bus_raw & 0x0001) {
+            printf("  -> Math Overflow: OUI (dépassement!)\r\n");
+        }
+
+        uint16_t voltage_value = bus_raw >> 3;
+        float voltage = voltage_value * 0.004f;
+        printf("  -> Voltage calculé: %.3f V\r\n", voltage);
+
+    } else {
+        printf("ERREUR: Impossible de lire BUS VOLTAGE\r\n");
+    }
+
+    printf("========================\r\n\r\n");
+}
 
 float INA219_GetBusVoltage_V(INA219_HandleTypedef *handle) {
-    uint16_t raw_data;
+    uint16_t raw;
+    // On lit le registre 0x02
+    if (INA219_ReadReg(handle, INA219_REG_BUSVOLTAGE, &raw) != HAL_OK) return 0.0f;
 
-    if (INA219_ReadReg(handle, INA219_REG_BUSVOLTAGE, &raw_data) != HAL_OK) {
-        return 0.0f; // Retourne 0.0f ou NAN en cas d'erreur
-    }
-    raw_data = raw_data >> 3;
+    // 1. On décale de 3 bits vers la droite
+    uint16_t data = raw >> 3;
 
-    return (float)raw_data * 0.004f;
+    // 2. On multiplie par 4mV (0.004)
+    float voltage = (float)data * 0.004f;
+
+    return voltage;
+}
+
+float INA219_GetVoltage(INA219_HandleTypedef *handle) {
+    uint16_t raw;
+    if (INA219_ReadReg(handle, INA219_REG_BUSVOLTAGE, &raw) != HAL_OK) return 0.0f;
+
+    // On décale de 3 bits vers la droite pour obtenir la valeur réelle
+    // Le LSB (le cran minimum) est toujours de 4mV
+    uint16_t value = raw >> 3;
+
+    return (float)value * 0.004f;
 }
 
 float INA219_GetShuntVoltage_V(INA219_HandleTypedef *handle) {

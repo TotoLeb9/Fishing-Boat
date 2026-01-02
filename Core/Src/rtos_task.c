@@ -1,34 +1,41 @@
-/*
- * rtos_task.c
+/**
+ * @file    rtos_task.c
+ * @brief   Gestion des tâches FreeRTOS et de l'interface utilisateur
  *
- *  Created on: Dec 15, 2025
- *      Author: totoleb
+ * @details
+ * - Gestion des boutons (EXTI + notifications)
+ * - Communication NRF24 (TX/RX)
+ * - Affichage LCD (ST7735)
+ * - Supervision (Watchdog, tension batterie)
+ *
+ * @author  totoleb
+ * @date    2025-12-17
  */
 #include "rtos_task.h"
 
-#define LED         10
-#define PHARE       20
-#define SERVO_DROIT 30
-#define SERVO_GAUCHE 40
-#define DEAD_ZONE 50
-#define MID_LEFT_RIGHT 430
-#define DEBOUNCE_TIME_MS 200
 volatile uint8_t servo_angle_gauche = 180;
-int minimum_servo_gauche = 90;
 volatile uint8_t servo_angle_droit = 0;
+volatile bool requestVoltage = false;
+volatile uint32_t last_cmd_tick = 0;
+volatile uint8_t nrfConnected = 0;
+
+uint8_t result;
+uint8_t payload[PAYLOAD_SIZE];
+int minimum_servo_gauche = 90;
+
 
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityLow,
 };
 
 osThreadId_t ListeningNrfHandle;
 const osThreadAttr_t listener_attr = {
     .name = "ListeningNRF",
-    .priority = osPriorityHigh,
-    .stack_size = 256 * 4
+    .priority =  osPriorityRealtime,
+    .stack_size = 1024 * 4
 };
 
 osThreadId_t DebugNrfFifoHandle;
@@ -38,8 +45,88 @@ const osThreadAttr_t debugfifo_attr = {
     .stack_size = 128 * 4
 };
 
-QueueHandle_t joyQueue = NULL;
+osThreadId_t MotorTaskHandle;
+const osThreadAttr_t Motor_Attributes = {
+	.name = "MotorTask",
+	.priority = osPriorityAboveNormal,
+	.stack_size = 512 * 4
+};
 
+osThreadId_t VoltageTaskHandle;
+const osThreadAttr_t voltageTask_attributes = {
+		.name = "VoltageTask",
+		.priority = osPriorityAboveNormal,
+		.stack_size = 512 * 4
+};
+
+osThreadId_t WatchDogNRFHandle;
+const osThreadAttr_t watchDogNRF_attributes = {
+		.name = "watchDogNRFTask",
+		.priority = osPriorityNormal,
+		.stack_size = 512 * 4
+};
+
+
+
+const osMutexAttr_t nrfMutex_attributes = {
+    .name = "nrfMutex"
+};
+QueueHandle_t joyQueue = NULL;
+int packet = 0;
+osMutexId_t nrfMutex;
+
+
+void StartDefaultTask(void *argument)
+{
+    uint8_t local_payload[PAYLOAD_SIZE];
+    uint8_t handshake_ok = 0;
+    uint8_t retry = 0;
+    osDelay(100);
+    float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
+    uint16_t vbus_mv = (uint16_t)(Vbus * 100.0f);
+    memset(local_payload, 0, PAYLOAD_SIZE);
+    local_payload[0] = 0xEE;
+    local_payload[1] = (vbus_mv >> 8) & 0xFF;
+    local_payload[2] = (vbus_mv & 0xFF);
+
+    LOG_INFO("Envoi handshake, voltage: %u mV\r\n", vbus_mv);
+    while(!handshake_ok && retry < 10)
+    {
+        if(nrf24_write(local_payload, PAYLOAD_SIZE))
+        {
+            handshake_ok = 1;
+            LOG_INFO("Handshake envoyé !\r\n");
+        }
+        else
+        {
+            retry++;
+            LOG_INFO("Retry handshake %u/10\r\n", retry);
+            osDelay(100);
+        }
+    }
+
+    if(!handshake_ok)
+    {
+        LOG_INFO("ERREUR: Handshake échoué !\r\n");
+    }
+
+    nrf24_start_listening();
+    osDelay(10);
+    osThreadFlagsSet(MotorTaskHandle, START_FLAG);
+    osThreadFlagsSet(ListeningNrfHandle, START_FLAG);
+    osThreadFlagsSet(VoltageTaskHandle, START_FLAG);
+
+    LOG_INFO("Toutes les tâches démarrées\r\n");
+
+    for(;;)
+    {
+        osDelay(1000);
+    }
+}
+
+/**********************************************
+ *
+ **********************************************/
 void process_command(uint8_t command) {
 	static uint32_t last_phare_time = 0;
 	static uint32_t last_led_time = 0;
@@ -49,35 +136,69 @@ void process_command(uint8_t command) {
             if (servo_angle_gauche > 90) servo_angle_gauche -= 30;
             else servo_angle_gauche=180;
             Servo_SetAngleGauche(servo_angle_gauche);
-            printf("Commande : 0x%02X\r\n", command);
-            printf("Servo angle: %d°\r\n", servo_angle_gauche);
+            LOG_INFO("Commande : 0x%02X\r\n", command);
+            LOG_INFO("Servo angle droit: %d°\r\n", servo_angle_gauche);
             break;
 
         case SERVO_GAUCHE:
                     if (servo_angle_droit < 90) servo_angle_droit += 30;
                     else servo_angle_droit=0;
                     Servo_SetAngleDroit(servo_angle_droit);
-                    printf("Commande : 0x%02X\r\n", command);
-                    printf("Servo angle: %d°\r\n", servo_angle_droit);
+                    LOG_INFO("Commande : 0x%02X\r\n", command);
+                    LOG_INFO("Servo angle gauche: %d°\r\n", servo_angle_droit);
                     break;
         case PHARE:
         	if (current_time - last_phare_time >= DEBOUNCE_TIME_MS) {
         	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_12);
-        	printf("Commande : 0x%02X\r\n", command);
+        	LOG_INFO("Commande : 0x%02X\r\n", command);
         	last_phare_time = current_time;
         	}
         	break;
         case LED:
         	if (current_time - last_led_time >= DEBOUNCE_TIME_MS) {
         	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_8);
-        	printf("Commande  0x%02X\r\n", command);
+        	LOG_INFO("Commande  0x%02X\r\n", command);
         	last_led_time = current_time;
         	}
         	break;
 
         default:
-            printf("Commande inconnue: 0x%02X\r\n", command);
+        	LOG_INFO("Commande inconnue: 0x%02X\r\n", command);
             break;
+    }
+}
+
+
+void WatchDogNrfTask(void *argument){
+	uint32_t flags;
+	for(;;){
+		flags = osThreadFlagsWait(
+		            CMD_ALIVE_FLAG,
+		            osFlagsWaitAny,
+		            300
+			);
+		if(!(flags & CMD_ALIVE_FLAG)){
+			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_8);
+			nrfConnected = 0;
+		}
+		else
+		{
+			nrfConnected = 1;
+		}
+
+	}
+}
+
+void MotorTask(void *argument)
+{
+    JoyCmd_t joy_values;
+    osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
+    for (;;)
+    {
+        if (xQueueReceive(joyQueue, &joy_values, portMAX_DELAY) == pdPASS)
+        {
+        	Handle_Joystick(joy_values.x, joy_values.y);
+        }
     }
 }
 
@@ -88,48 +209,73 @@ void InitQueue(void){
 	    );
 }
 
-void StartDefaultTask(void *argument)
-{
-  for(;;)
-  {
-    osDelay(1);
-  }
-}
-
 void ListeningNrf(void *argument)
 {
+	osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
     uint8_t buffer[PAYLOAD_SIZE];
-
+    uint8_t buffer_tx[PAYLOAD_SIZE];
     for (;;)
     {
+    	if (osMutexAcquire(nrfMutex, 10) == osOK) {
+
+
         if (nrf24_available())
         {
             if (nrf24_read(buffer, PAYLOAD_SIZE))
             {
+
                 if (buffer[0] == 0xAA)
                 {
                     JoyCmd_t cmd;
                     cmd.x = buffer[1];
                     cmd.y = buffer[2];
-
+                    packet++;
+                    printf("X:%u Y=%u",cmd.x,cmd.y);
                     xQueueOverwrite(joyQueue, &cmd);
+                    osThreadFlagsSet(WatchDogNRFHandle, CMD_ALIVE_FLAG);
                 }
                 else if (buffer[0] == 0xBB || buffer[0] == 0xBA)
                 {
+                	packet++;
+                	LOG_INFO("PKT:%d\n",packet);
                     process_command(buffer[1] & 0xFE);
                 }
+                else if (buffer[0] >= 0xC0 && buffer[0] <= 0xCF)
+                {
+                	 LOG_INFO("Demande voltage reçue\r\n");
+					float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
+					uint16_t vbus_mv = (uint16_t)(Vbus * 100.0f);
+					memset(buffer_tx, 0, PAYLOAD_SIZE);
+					buffer_tx[0] = 0xDD;
+					buffer_tx[1] = (vbus_mv >> 8) & 0xFF;
+					buffer_tx[2] = 0xAA;
+					nrf24_stop_listening();
+					osDelay(2);
+					uint8_t tx_result = nrf24_write(buffer_tx, PAYLOAD_SIZE);
+					LOG_INFO("Voltage envoyé: %u mV (result=%u)\r\n", vbus_mv, tx_result);
+					osDelay(2);
+					nrf24_start_listening();
+
+                }
+
+
             }
+            osMutexRelease(nrfMutex);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(5));
+        osDelay(5);
     }
+}
 }
 
 void DebugFifoNrf(void *argument)
 {
-
+	osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
     for (;;)
     {
+    	float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
+    	LOG_INFO("%d", (int)(Vbus * 1000));
+
 		uint8_t status_check, fifo_check;
 		nrf24_read_register(NRF24_STATUS, &status_check, 1);
 		nrf24_read_register(NRF24_FIFO_STATUS, &fifo_check, 1);
@@ -139,3 +285,4 @@ void DebugFifoNrf(void *argument)
 		vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
+

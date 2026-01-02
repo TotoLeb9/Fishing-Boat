@@ -20,7 +20,10 @@
 #define JOY_CENTER_Y 44
 #define MIX_PERCENT 0.6f
 
-
+/**
+ * @brief Met le servo de gauche à un angle donné
+ * @param uint8_t angle : Angle à appliquer au servo
+ */
 void Servo_SetAngleGauche(uint8_t angle)
 {
 	if (angle < 90){
@@ -30,6 +33,10 @@ void Servo_SetAngleGauche(uint8_t angle)
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pulse);
 }
 
+/**
+ * @brief Met le servo de droite à un angle donné
+ * @param uint8_t angle : Angle à appliquer au servo
+ */
 void Servo_SetAngleDroit(uint8_t angle)
 {
 	if (angle > 90){
@@ -39,6 +46,10 @@ void Servo_SetAngleDroit(uint8_t angle)
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pulse);
 }
 
+/**
+ * @brief Met le servo du bas à un angle donné
+ * @param uint8_t angle : Angle à appliquer au servo
+ */
 void Servo_SetAngleBas(uint8_t angle)
 {
     if (angle > 180) angle = 180;
@@ -46,6 +57,10 @@ void Servo_SetAngleBas(uint8_t angle)
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse);
 }
 
+/**
+ * @brief Définit la vitesse de l'ESC droit
+ * @param Pulsation en microsecondes
+ */
 void ESC_SetThrottle_D(uint16_t pulse_us)
 {
     if(pulse_us < 1000) pulse_us = 1000;
@@ -53,6 +68,10 @@ void ESC_SetThrottle_D(uint16_t pulse_us)
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pulse_us);
 }
 
+/**
+ * @brief Définit la vitesse de l'ESC gauche
+ * @param Pulsation en microsecondes
+ */
 void ESC_SetThrottle_G(uint16_t pulse_us)
 {
     if(pulse_us < 1000) pulse_us = 1000;
@@ -70,6 +89,11 @@ uint16_t clamp_pwm(uint16_t v) {
     return v;
 }
 
+/**
+ * @brief Convertit une valeur float [-1.0, 1.0] en PWM ESC
+ * @param value -1.0 = full reverse, 0 = neutre, 1.0 = full forward
+ * @return PWM en µs
+ */
 uint16_t map_joy_to_pwm(uint8_t y)
 {
     if (y < JOY_MIN_Y) y = JOY_MIN_Y;
@@ -109,14 +133,26 @@ float map_to_float(uint8_t val, uint8_t min, uint8_t center, uint8_t max) {
     }
 }
 
+/**
+ * @brief Convertit les valeurs du joystick en PWM pour moteurs gauche/droite
+ * @param x Position X joystick (JOY_MIN_X → JOY_MAX_X)
+ * @param y Position Y joystick (JOY_MIN_Y → JOY_MAX_Y)
+ *
+ * Cette fonction :
+ * - Mappe le joystick sur [-1,1] en tenant compte de la deadzone
+ * - Applique un mixage différentiel pour tourner
+ * - Normalise les valeurs si elles dépassent [-1,1]
+ * - Convertit les valeurs float en PWM
+ *
+ * @note ESC classiques mono-sens : PWM < PWM_NEUTRAL n'entraîne pas marche arrière
+ */
 void Handle_Joystick(uint8_t x, uint8_t y)
 {
     float throttle = map_to_float(y, JOY_MIN_Y, JOY_CENTER_Y, JOY_MAX_Y);
     float turn = map_to_float(x, JOY_MIN_X, JOY_CENTER_X, JOY_MAX_X);
-
-    float left = throttle + (turn * 0.7f);
-    float right = throttle - (turn * 0.7f);
-
+    float turn_influence = 0.35f;
+    float left = throttle + (turn * turn_influence);
+    float right = throttle - (turn * turn_influence);
     float max_val = fmaxf(fabsf(left), fabsf(right));
     if (max_val > 1.0f) {
         left /= max_val;
@@ -133,6 +169,6 @@ void Handle_Joystick(uint8_t x, uint8_t y)
         pwm_d = PWM_NEUTRAL + (int16_t)(right * (right > 0 ? (PWM_MAX - PWM_NEUTRAL) : (PWM_NEUTRAL - PWM_MIN)));
     }
 
-    ESC_SetThrottle_G(pwm_d);
-    ESC_SetThrottle_D(pwm_g);
+    ESC_SetThrottle_G(pwm_g);  // ← Vérifiez aussi cette inversion !
+    ESC_SetThrottle_D(pwm_d);
 }

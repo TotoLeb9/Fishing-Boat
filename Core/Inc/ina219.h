@@ -4,7 +4,7 @@
 #include "stm32f4xx_hal.h"
 #include <stdio.h>
 
-#define INA219_I2C_ADDRESS 0x40 << 1
+#define INA219_I2C_ADDRESS 0x41 << 1
 
 #define INA219_REG_CONFIG         0x00
 #define INA219_REG_SHUNTVOLTAGE   0x01
@@ -37,14 +37,16 @@ HAL_StatusTypeDef INA219_Init(INA219_HandleTypedef *handle,
                               I2C_HandleTypeDef *hi2c,
                               float shunt_ohm,
                               float current_max_amp);
-
+HAL_StatusTypeDef INA219_ReadReg(INA219_HandleTypedef *handle, uint8_t reg, uint16_t *data);
+void INA219_DiagnosticTest(INA219_HandleTypedef *handle);
+HAL_StatusTypeDef INA219_WriteReg(INA219_HandleTypedef *handle, uint8_t reg, uint16_t data);
 /**
  * @brief Lit le registre de tension du bus (VBUS).
  * @param handle : Pointeur vers la structure du driver INA219.
  * @retval Tension du Bus en Volts (V).
  */
 float INA219_GetBusVoltage_V(INA219_HandleTypedef *handle);
-
+float INA219_GetVoltage(INA219_HandleTypedef *handle);
 /**
  * @brief Lit le registre de tension de Shunt (VSHUNT).
  * @param handle : Pointeur vers la structure du driver INA219.

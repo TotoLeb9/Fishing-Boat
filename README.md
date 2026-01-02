@@ -63,7 +63,24 @@ Les transistors agissent en tant qu'interrupteur sur **3 composants** :
 La **carte Nucleo STM32** agit comme le cerveau du bateau.
 Elle réceptionne les commandes envoyées par la manette (via radio), les interprète, puis les traduit en actions directes : commande des moteurs, des servos, et gestion des fonctions annexes (télémétrie, sécurité, éclairage).
 
-Pour assurer un fonctionnement **fluide, réactif et fiable**, le système repose sur **FreeRTOS**, un système d’exploitation temps réel.
+Pour assurer un fonctionnement **fluide, réactif et fiable**, le système repose sur **FreeRTOS**, un système d’exploitation temps réel. Voici les tâches principales:    
+- **ListeningNrfTask** :  
+Tâche dédiée à l'écoute permanente de la réception des messages via radio. Elle traite chaque type de message independamment en fonction du header reçu.  
+-> **AA (Analog)**, réception des données analogiques du joystick, ces données sont envoyées dans une **Queue** (file) sous la forme d'une structure.  
+-> **BB (Bouton)**, réception des données des boutons. Par exemple allummer le phare, les leds ou les servos.  
+-> **CC (Voltage)**, réception de la demande d'envoi du niveau de batterie. À la réception, le bateau passe le nrf24l01 en mode **sender**, envoie la batterie courante et repasse en **listener**. 
+
+- **MotorTask** :  
+Tâche dédiée au contrôle des moteurs. Quand un message est arrivé sur la **File JoyQueue** qui se présente comme suit:  
+```c
+typedef struct
+{
+    uint8_t x;          // Joystick X (direction)
+    uint8_t y;          // Joystick Y (vitesse)
+    uint32_t tick;      // Tick RTOS de réception
+} JoyCmd_t;
+```
+
 
 # Homemade remote controller
 

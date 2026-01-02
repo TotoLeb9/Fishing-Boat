@@ -88,11 +88,19 @@ typedef struct {
     uint8_t RF_SETUP;
 } NRF24_Registers;
 
+enum {
+	LISTENER = 0,
+	SENDER = 1
+};
+
+typedef uint8_t STATE_NRF;
+extern uint8_t payload[PAYLOAD_SIZE];
 // ============================================================================
 // VARIABLES EXTERNES
 // ============================================================================
 extern SPI_HandleTypeDef hspi1;
-
+extern uint8_t nrf24_tx_address[5];
+extern uint8_t nrf24_rx_address[5];
 // ============================================================================
 // FONCTIONS PUBLIQUES - INITIALISATION
 // ============================================================================
@@ -184,4 +192,12 @@ void nrf24_power_up(void);
 void nrf24_print_status(void (*print_func)(const char*, ...));
 void nrf24_read_register(uint8_t reg, uint8_t *data, uint8_t len);
 void check_config(uint8_t config, uint8_t status, uint8_t fifo, uint8_t en_aa, uint8_t en_rxaddr,uint8_t rx_addr_p0[5]);
+void switchState(STATE_NRF state);
+
+/**
+ * @brief Envoie un paquet et attend une réponse avec basculement auto
+ */
+uint8_t nrf24_write_and_wait_response(uint8_t *tx_data, uint8_t tx_len,
+                                       uint8_t *rx_buffer, uint8_t rx_len,
+                                       uint32_t timeout_ms);
 #endif /* NRF_H */

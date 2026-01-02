@@ -4,8 +4,8 @@
 // VARIABLES GLOBALES
 // ============================================================================
 static NRF24_Registers nrf24_regs;
-static uint8_t nrf24_tx_address[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
-static uint8_t nrf24_rx_address[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
+uint8_t nrf24_tx_address[5] = {0xE6, 0xE7, 0xE7, 0xE7, 0xE7};
+uint8_t nrf24_rx_address[5] = {0xE6, 0xE7, 0xE7, 0xE7, 0xE7};
 
 // ============================================================================
 // FONCTIONS PRIVÉES - CONTRÔLE GPIO
@@ -303,6 +303,10 @@ void nrf24_stop_listening(void) {
     flush_tx();
     flush_rx();
 }
+/***
+ * @brief Passe de listener a sender et de sender a listener
+ ***/
+
 
 /**
  * @brief   Vérifie si des données sont disponibles
@@ -490,4 +494,177 @@ void check_config(uint8_t config, uint8_t status, uint8_t fifo, uint8_t en_aa, u
 	  LOG_INFO("Adresse attendue: %02X:%02X:%02X:%02X:%02X\r\n",
 			  rx_addr_p0[0], rx_addr_p0[1], rx_addr_p0[2],
 			  rx_addr_p0[3], rx_addr_p0[4]);
+}
+
+// ============================================================================
+// NOUVELLES FONCTIONS À AJOUTER À LA FIN DE VOTRE nrf.c EXISTANT
+// ============================================================================
+
+/**
+ * @brief Bascule entre mode LISTENER (RX) et SENDER (TX) - VERSION CORRIGÉE
+ */
+void switchState(STATE_NRF state)
+{
+    ce_low();
+    osDelay(2);  // Attendre que CE soit bien bas
+
+    uint8_t config;
+    nrf24_read_register(NRF24_CONFIG, &config, 1);
+
+    if (state == LISTENER)
+    {
+        // Configurer pour RECEVOIR sur E7
+        uint8_t rx_address[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
+        nrf24_write_register(NRF24_RX_ADDR_P0, rx_address, 5);
+        nrf24_write_register(NRF24_RX_ADDR_P1, rx_address, 5);
+
+        memcpy(nrf24_rx_address, rx_address, 5);
+
+        // Passer en mode RX
+        config |= (1 << 0);   // PRIM_RX = 1
+        config |= (1 << 1);   // PWR_UP = 1
+        nrf24_write_register(NRF24_CONFIG, &config, 1);
+
+        // Nettoyer les flags et FIFOs
+        clear_status_flags(0x70);
+        flush_rx();
+        flush_tx();
+
+        osDelay(2);  // Délai de stabilisation
+        ce_high();
+        osDelay(1);  // 130µs minimum pour activer RX
+
+        LOG_INFO("Mode LISTENER actif, RX_ADDR_P0 = E7:E7:E7:E7:E7\r\n");
+    }
+    else if (state == SENDER)
+    {
+        // Configurer pour ENVOYER vers E6
+        uint8_t tx_address[5] = {0xE6, 0xE7, 0xE7, 0xE7, 0xE7};
+        nrf24_write_register(NRF24_TX_ADDR, tx_address, 5);
+        nrf24_write_register(NRF24_RX_ADDR_P0, tx_address, 5);  // Pour ACK
+
+        memcpy(nrf24_tx_address, tx_address, 5);
+
+        // Passer en mode TX
+        config &= ~(1 << 0);  // PRIM_RX = 0
+        config |=  (1 << 1);  // PWR_UP = 1
+        nrf24_write_register(NRF24_CONFIG, &config, 1);
+
+        // Nettoyer les flags et FIFOs
+        clear_status_flags(0x70);
+        flush_tx();
+        flush_rx();
+
+        osDelay(2);  // Délai de stabilisation
+
+        LOG_INFO("Mode SENDER actif, TX_ADDR = E6:E7:E7:E7:E7\r\n");
+    }
+}
+
+/**
+ * @brief Envoie un paquet ET attend une réponse avec basculement automatique TX->RX->TX
+ * @param tx_data : Données à envoyer
+ * @param tx_len : Taille des données à envoyer
+ * @param rx_buffer : Buffer pour recevoir la réponse
+ * @param rx_len : Taille attendue de la réponse
+ * @param timeout_ms : Timeout en millisecondes pour attendre la réponse
+ * @return 1 si succès (envoi + réponse reçue), 0 si échec
+ */
+uint8_t nrf24_write_and_wait_response(uint8_t *tx_data, uint8_t tx_len,
+                                       uint8_t *rx_buffer, uint8_t rx_len,
+                                       uint32_t timeout_ms)
+{
+    // 1. S'assurer d'être en mode TX
+    ce_low();
+    uint8_t config;
+    nrf24_read_register(NRF24_CONFIG, &config, 1);
+    config &= ~(1<<0);  // PRIM_RX = 0
+    config |= (1<<1);   // PWR_UP = 1
+    nrf24_write_register(NRF24_CONFIG, &config, 1);
+    osDelay(2);
+
+    // 2. Envoyer le paquet
+    clear_status_flags(0x70);
+    flush_tx();
+
+    cs_low();
+    spi_transfer(NRF24_W_TX_PAYLOAD);
+    for (uint8_t i = 0; i < tx_len; i++) {
+        spi_transfer(tx_data[i]);
+    }
+    cs_high();
+
+    // 3. Pulse CE pour transmission
+    ce_high();
+    osDelay(1);
+    ce_low();
+
+    // 4. Attendre TX_DS ou MAX_RT
+    uint32_t start = HAL_GetTick();
+    uint8_t tx_ok = 0;
+
+    while ((HAL_GetTick() - start) < 100) {
+        uint8_t status = read_status();
+
+        if (status & (1<<5)) {  // TX_DS
+            clear_status_flags(1<<5);
+            tx_ok = 1;
+            break;
+        }
+
+        if (status & (1<<4)) {  // MAX_RT
+            clear_status_flags(1<<4);
+            flush_tx();
+            return 0;
+        }
+        osDelay(1);
+    }
+
+    if (!tx_ok) return 0;
+
+    // 5. Basculer en RX immédiatement
+    ce_low();
+    osDelay(1);
+
+    nrf24_read_register(NRF24_CONFIG, &config, 1);
+    config |= (1<<0);   // PRIM_RX = 1
+    config |= (1<<1);   // PWR_UP = 1
+    nrf24_write_register(NRF24_CONFIG, &config, 1);
+
+    clear_status_flags(0x70);
+    flush_rx();
+
+    ce_high();
+    osDelay(2);  // Délai pour stabiliser RX
+
+    // 6. Attendre réponse
+    start = HAL_GetTick();
+
+    while ((HAL_GetTick() - start) < timeout_ms) {
+        if (nrf24_available()) {
+            if (nrf24_read(rx_buffer, rx_len)) {
+                // Revenir en TX pour le prochain cycle
+                ce_low();
+                osDelay(1);
+                nrf24_read_register(NRF24_CONFIG, &config, 1);
+                config &= ~(1<<0);  // PRIM_RX = 0
+                config |= (1<<1);   // PWR_UP = 1
+                nrf24_write_register(NRF24_CONFIG, &config, 1);
+                osDelay(2);
+                return 1;
+            }
+        }
+        osDelay(2);
+    }
+
+    // Timeout - revenir en TX
+    ce_low();
+    osDelay(1);
+    nrf24_read_register(NRF24_CONFIG, &config, 1);
+    config &= ~(1<<0);
+    config |= (1<<1);
+    nrf24_write_register(NRF24_CONFIG, &config, 1);
+    osDelay(2);
+
+    return 0;
 }

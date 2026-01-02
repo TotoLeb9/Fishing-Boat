@@ -34,7 +34,7 @@
 #define TX_POWER        3
 #define PAYLOAD_SIZE    32
 #define TIMEOUT 5000
-uint8_t TIMEOUT_INA=5;
+uint8_t TIMEOUT_INA=3;
 
 
 /* USER CODE END PD */
@@ -112,6 +112,9 @@ void init_tim(void){
   * @brief  The application entry point.
   * @retval int
   */
+
+
+
 int main(void)
 {
 
@@ -144,21 +147,23 @@ int main(void)
   MX_TIM2_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  init_tim();
   while (INA219_Init(&ina219_sensor, &hi2c1, 0.1f, 3.2f) != HAL_OK && TIMEOUT_INA>0) {
 	  	  HAL_Delay(1000);
 	  	  TIMEOUT_INA--;
+	  	  LOG_INFO("ERREUR");
       }
-  init_tim();
+  HAL_Delay(100);  // Attendre que les conversions commencent
   ESC_SetThrottle_G(1000);
   ESC_SetThrottle_D(1000);
 
-  Servo_SetAngleGauche(servo_angle_gauche);  // Position initiale 180°
-  Servo_SetAngleDroit(servo_angle_droit);    // Position initiale 0°
-  Servo_SetAngleBas(180);
+  Servo_SetAngleGauche(90);  // Position initiale 180°
+  Servo_SetAngleDroit(90);    // Position initiale 0°
+  Servo_SetAngleBas(90);
 
   LOG_INFO("\r\n========================================\r\n");
   LOG_INFO("     NRF24L01+ - MODE RECEIVER\r\n");
-  LOG_INFO("========================================\r\n");
+  LOG_INFO("============================================\r\n");
   HAL_Delay(500);
   LOG_INFO("Initialisation NRF24...\r\n");
   if (nrf24_init(RF_CHANNEL, DATA_RATE, TX_POWER) != 0) {
@@ -166,7 +171,8 @@ int main(void)
       Error_Handler();
   }
   HAL_Delay(100);
-  nrf24_set_rx_address(rx_address, 0);
+  nrf24_set_rx_address(nrf24_rx_address, 0);
+  nrf24_set_tx_address(nrf24_rx_address);
   if (HAL_GPIO_ReadPin(NRF_CE_GPIO_Port, NRF_CE_Pin) == GPIO_PIN_SET) {
       LOG_INFO("CE: HIGH (OK)\r\n");
   } else {
@@ -175,7 +181,6 @@ int main(void)
       HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
   }
   nrf24_start_listening();
-  last_received_time = HAL_GetTick();
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET);
 
   /* USER CODE END 2 */
@@ -197,16 +202,19 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
-
+  nrfMutex = osMutexNew(&nrfMutex_attributes);
+  InitQueue();
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
   ListeningNrfHandle = osThreadNew(ListeningNrf, NULL, &listener_attr);
+  MotorTaskHandle = osThreadNew(MotorTask, NULL, &Motor_Attributes);
+  WatchDogNRFHandle = osThreadNew(WatchDogNrfTask, NULL, &watchDogNRF_attributes);
 #ifdef DEBUG
    check_config(config,status,fifo,en_aa,en_rxaddr,rx_addr_p0);
-   DebugNrfFifoHandle = osThreadNew(DebugFifoNrf, NULL, &debugfifo_attr);
+   //DebugNrfFifoHandle = osThreadNew(DebugFifoNrf, NULL, &debugfifo_attr);
 #endif
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
