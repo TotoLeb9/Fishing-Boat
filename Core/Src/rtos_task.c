@@ -66,6 +66,20 @@ const osThreadAttr_t watchDogNRF_attributes = {
 		.stack_size = 512 * 4
 };
 
+osThreadId_t CompassHandle;
+const osThreadAttr_t compass_attributes = {
+		.name = "CompassTask",
+		.priority = osPriorityNormal,
+		.stack_size = 256 * 4
+};
+
+osThreadId_t GpsHandle;
+const osThreadAttr_t gps_attributes = {
+		.name = "GPSTask",
+		.priority = osPriorityNormal,
+		.stack_size = 512 * 4
+};
+
 
 
 const osMutexAttr_t nrfMutex_attributes = {
@@ -115,7 +129,8 @@ void StartDefaultTask(void *argument)
     osThreadFlagsSet(MotorTaskHandle, START_FLAG);
     osThreadFlagsSet(ListeningNrfHandle, START_FLAG);
     osThreadFlagsSet(VoltageTaskHandle, START_FLAG);
-
+    osThreadFlagsSet(CompassHandle , START_FLAG);
+    osThreadFlagsSet(GpsHandle , START_FLAG);
     LOG_INFO("Toutes les tâches démarrées\r\n");
 
     for(;;)
@@ -166,6 +181,21 @@ void process_command(uint8_t command) {
         	LOG_INFO("Commande inconnue: 0x%02X\r\n", command);
             break;
     }
+}
+
+void CompassTask(void *argument){
+	osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
+	for(;;){
+		if (QMC5883P_ReadXYZ(&mag, &magData) == QMC_OK)
+		  {
+			  printf("X:%.2f Y:%.2f Z:%.2f %f \r\n",
+					 magData.x, magData.y, magData.z , magData.heading);
+		  }
+		  float heading = QMC5883P_GetHeadingDeg(&mag, 0.0f);
+		  LOG_INFO("HEADING = %f\n\r", heading);
+		  osDelay(100);
+	}
+
 }
 
 
@@ -230,7 +260,8 @@ void ListeningNrf(void *argument)
                     cmd.x = buffer[1];
                     cmd.y = buffer[2];
                     packet++;
-                    printf("X:%u Y=%u",cmd.x,cmd.y);
+                    printf("X:%u Y=%u\r\n",cmd.x,cmd.y);
+                    osDelay(50);
                     xQueueOverwrite(joyQueue, &cmd);
                     osThreadFlagsSet(WatchDogNRFHandle, CMD_ALIVE_FLAG);
                 }
@@ -257,7 +288,6 @@ void ListeningNrf(void *argument)
 					nrf24_start_listening();
 
                 }
-
 
             }
             osMutexRelease(nrfMutex);
@@ -286,3 +316,27 @@ void DebugFifoNrf(void *argument)
     }
 }
 
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
+	if(huart->Instance==UART4){
+		BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+		xTaskNotifyFromISR(GpsHandle, Size, eSetValueWithOverwrite, &xHigherPriorityTaskWoken);
+		portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+	}
+}
+
+
+void GpsTask(void *argument) {
+    uint32_t size;
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart4, gps_data, PAYLOAD_GPS_SIZE);
+    osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
+    for(;;) {
+        if (xTaskNotifyWait(0, 0, &size, portMAX_DELAY) == pdPASS) {
+            if (size > 0 && size < PAYLOAD_GPS_SIZE) {
+                gps_data[size] = '\0';
+                if (strstr((char*)gps_data, "RMC")) {
+                    ParseGPS_RMC((char*)gps_data);
+                }
+            }
+        }
+    }
+}

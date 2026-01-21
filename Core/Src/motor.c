@@ -8,15 +8,15 @@
 #include "motor.h"
 #include <stdlib.h>
 #include <math.h>
-#define PWM_MIN 1000
-#define PWM_MAX 1400
-#define PWM_NEUTRAL 1200
-#define DEADZONE 2
-#define JOY_MIN_X 16
-#define JOY_MAX_X 70
-#define JOY_CENTER_X 26
-#define JOY_MIN_Y 15
-#define JOY_MAX_Y 63
+#define PWM_MIN 1400
+#define PWM_MAX 1600
+#define PWM_NEUTRAL 1500
+#define DEADZONE 5
+#define JOY_MIN_X 20
+#define JOY_MAX_X 66
+#define JOY_CENTER_X 28
+#define JOY_MIN_Y 23
+#define JOY_MAX_Y 65
 #define JOY_CENTER_Y 44
 #define MIX_PERCENT 0.6f
 

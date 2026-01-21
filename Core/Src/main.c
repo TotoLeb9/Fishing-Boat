@@ -19,6 +19,7 @@
 #include "motor.h"
 #include "log.h"
 #include "rtos_task.h"
+#include "gy271.h"
 
 /* USER CODE END Includes */
 
@@ -34,8 +35,10 @@
 #define TX_POWER        3
 #define PAYLOAD_SIZE    32
 #define TIMEOUT 5000
+#define TIMEOUT_NRF 5
 uint8_t TIMEOUT_INA=3;
-
+QMC5883P_t mag;
+QMC5883P_Data_t magData;
 
 /* USER CODE END PD */
 
@@ -53,11 +56,9 @@ TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
+UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart2;
-
-/* Definitions for defaultTask */
-
-
+DMA_HandleTypeDef hdma_uart4_rx;
 /* USER CODE BEGIN PV */
 uint8_t rx_address[5] = {0xE6, 0xE7, 0xE7, 0xE7, 0xE7};
 uint32_t packets_received = 0;
@@ -66,18 +67,21 @@ uint32_t last_received_time = 0;
 INA219_HandleTypedef ina219_sensor;
 uint8_t config, status, fifo, en_aa, en_rxaddr;
 uint8_t rx_addr_p0[5];
+uint8_t isConnected = 0;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_UART4_Init(void);
 
 /* USER CODE BEGIN PFP */
 /* USER CODE END PFP */
@@ -106,20 +110,86 @@ void init_tim(void){
 	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
 }
 
+void I2C_Scan(I2C_HandleTypeDef *hi2c)
+{
+    printf("Scanning I2C bus:\r\n");
+    HAL_StatusTypeDef result;
+    uint8_t found = 0;
+
+    for(uint8_t i = 1; i < 128; i++)
+    {
+        result = HAL_I2C_IsDeviceReady(hi2c, (uint16_t)(i << 1), 2, 10);
+
+        if(result == HAL_OK)
+        {
+            printf("Device found at address: 0x%02X\r\n", i);
+            found++;
+        }
+    }
+
+    if(found == 0)
+    {
+        printf("No I2C devices found!\r\n");
+    }
+    else
+    {
+        printf("Total devices: %d\r\n", found);
+    }
+}
+
+void SetServoStarting(uint8_t gauche, uint8_t droit, uint8_t bas){
+	Servo_SetAngleGauche(gauche);
+	Servo_SetAngleDroit(droit);
+	Servo_SetAngleBas(bas);
+}
+
+void ESC_Calibrate_Sequence(void)
+{
+    ESC_SetThrottle_G(2000);
+    printf("CALIBRATION : Signal MAX envoyé. Branchez l'ESC...\n");
+    osDelay(3000);
+    printf("CALIBRATION : Passage au MINIMUM...\n");
+    ESC_SetThrottle_G(1500);
+    osDelay(2000);
+    printf("CALIBRATION : Terminée !\n");
+}
+
+uint8_t InitNrf(void){
+	LOG_INFO("\r\n========================================\r\n");
+	LOG_INFO("     NRF24L01+ - MODE RECEIVER\r\n");
+	LOG_INFO("============================================\r\n");
+	HAL_Delay(500);
+	LOG_INFO("Initialisation NRF24...\r\n");
+	  if (nrf24_init(RF_CHANNEL, DATA_RATE, TX_POWER) != 0) {
+	      LOG_ERROR("ERROR INIT NRF24\r\n");
+	      return 0;
+	  }
+	  HAL_Delay(100);
+	  nrf24_set_rx_address(nrf24_rx_address, 0);
+	  nrf24_set_tx_address(nrf24_rx_address);
+	  if (HAL_GPIO_ReadPin(NRF_CE_GPIO_Port, NRF_CE_Pin) == GPIO_PIN_SET) {
+	      LOG_INFO("CE: HIGH (OK)\r\n");
+	  } else {
+	      LOG_ERROR("CE: LOW (ERROR!)\r\n");
+	      LOG_ERROR("Forcing CE HIGH...\r\n");
+	      HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
+	  }
+	  nrf24_start_listening();
+	  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET);
+	  return 1;
+}
+
 /* USER CODE END 0 */
 
 /**
   * @brief  The application entry point.
   * @retval int
   */
-
-
-
 int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+	uint8_t counter_nrf = 0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -140,49 +210,35 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_SPI1_Init();
   MX_TIM3_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_I2C1_Init();
+  MX_UART4_Init();
   /* USER CODE BEGIN 2 */
+
   init_tim();
-  while (INA219_Init(&ina219_sensor, &hi2c1, 0.1f, 3.2f) != HAL_OK && TIMEOUT_INA>0) {
-	  	  HAL_Delay(1000);
-	  	  TIMEOUT_INA--;
-	  	  LOG_INFO("ERREUR");
-      }
-  HAL_Delay(100);  // Attendre que les conversions commencent
-  ESC_SetThrottle_G(1000);
-  ESC_SetThrottle_D(1000);
-
-  Servo_SetAngleGauche(90);  // Position initiale 180°
-  Servo_SetAngleDroit(90);    // Position initiale 0°
-  Servo_SetAngleBas(90);
-
-  LOG_INFO("\r\n========================================\r\n");
-  LOG_INFO("     NRF24L01+ - MODE RECEIVER\r\n");
-  LOG_INFO("============================================\r\n");
-  HAL_Delay(500);
-  LOG_INFO("Initialisation NRF24...\r\n");
-  if (nrf24_init(RF_CHANNEL, DATA_RATE, TX_POWER) != 0) {
-      LOG_ERROR("ERROR INIT NRF24\r\n");
-      Error_Handler();
-  }
   HAL_Delay(100);
-  nrf24_set_rx_address(nrf24_rx_address, 0);
-  nrf24_set_tx_address(nrf24_rx_address);
-  if (HAL_GPIO_ReadPin(NRF_CE_GPIO_Port, NRF_CE_Pin) == GPIO_PIN_SET) {
-      LOG_INFO("CE: HIGH (OK)\r\n");
-  } else {
-      LOG_ERROR("CE: LOW (ERROR!)\r\n");
-      LOG_ERROR("Forcing CE HIGH...\r\n");
-      HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
+  SetServoStarting(90, 90, 90);
+  ESC_SetThrottle_G(1400);
+  do{
+	  isConnected = InitNrf();
+	  counter_nrf ++;
+	  HAL_Delay(150);
   }
-  nrf24_start_listening();
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET);
-
+  while(!isConnected && counter_nrf < TIMEOUT_NRF);
+  if(!isConnected)Error_Handler();
+  if (QMC5883P_Init(&mag, &hi2c1) != QMC_OK)
+      {
+	  printf("ERROR");
+          Error_Handler();
+      }
+  QMC5883P_SetHardIronOffsets(&mag, -0.14f, 0.02f, -0.39f);
+  QMC5883P_SetSoftIronScales(&mag, 0.838f, 0.753f, 2.087f);
+  //CompassCalibration();
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -209,15 +265,15 @@ int main(void)
   /* Create the thread(s) */
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
-  ListeningNrfHandle = osThreadNew(ListeningNrf, NULL, &listener_attr);
-  MotorTaskHandle = osThreadNew(MotorTask, NULL, &Motor_Attributes);
-  WatchDogNRFHandle = osThreadNew(WatchDogNrfTask, NULL, &watchDogNRF_attributes);
-#ifdef DEBUG
-   check_config(config,status,fifo,en_aa,en_rxaddr,rx_addr_p0);
-   //DebugNrfFifoHandle = osThreadNew(DebugFifoNrf, NULL, &debugfifo_attr);
-#endif
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
+  ListeningNrfHandle = osThreadNew(ListeningNrf, NULL, &listener_attr);
+  DebugNrfFifoHandle = osThreadNew(DebugFifoNrf, NULL, &debugfifo_attr);
+  MotorTaskHandle = osThreadNew(MotorTask, NULL, &Motor_Attributes);
+  WatchDogNRFHandle = osThreadNew(WatchDogNrfTask, NULL, &watchDogNRF_attributes);
+  CompassHandle = osThreadNew(CompassTask, NULL, &compass_attributes);
+  GpsHandle = osThreadNew(GpsTask, NULL, &gps_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -226,7 +282,6 @@ int main(void)
   /* USER CODE END RTOS_EVENTS */
 
   /* Start scheduler */
-
   osKernelStart();
 
   /* We should never get here as control is now taken by the scheduler */
@@ -538,6 +593,39 @@ static void MX_TIM3_Init(void)
 }
 
 /**
+  * @brief UART4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_UART4_Init(void)
+{
+
+  /* USER CODE BEGIN UART4_Init 0 */
+
+  /* USER CODE END UART4_Init 0 */
+
+  /* USER CODE BEGIN UART4_Init 1 */
+
+  /* USER CODE END UART4_Init 1 */
+  huart4.Instance = UART4;
+  huart4.Init.BaudRate = 38400;
+  huart4.Init.WordLength = UART_WORDLENGTH_8B;
+  huart4.Init.StopBits = UART_STOPBITS_1;
+  huart4.Init.Parity = UART_PARITY_NONE;
+  huart4.Init.Mode = UART_MODE_TX_RX;
+  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN UART4_Init 2 */
+
+  /* USER CODE END UART4_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -567,6 +655,22 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream2_IRQn);
 
 }
 
@@ -653,14 +757,6 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
-
-/* USER CODE BEGIN Header_StartDefaultTask */
-/**
-  * @brief  Function implementing the defaultTask thread.
-  * @param  argument: Not used
-  * @retval None
-  */
-/* USER CODE END Header_StartDefaultTask */
 
 
 

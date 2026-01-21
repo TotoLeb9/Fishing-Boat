@@ -15,6 +15,8 @@
 #include "motor.h"
 #include "ina219.h"
 #include <stdbool.h>
+#include "gy271.h"
+#include "gps.h"
 
 #define LED         10
 #define PHARE       20
@@ -34,6 +36,9 @@ typedef struct
     uint32_t tick;      // Tick RTOS de réception
 } JoyCmd_t;
 
+extern QMC5883P_t mag;
+extern QMC5883P_Data_t magData;
+
 extern INA219_HandleTypedef ina219_sensor;
 /***************************************
  * TASK ATTRIBUTES
@@ -44,7 +49,8 @@ extern const osThreadAttr_t debugfifo_attr;
 extern const osThreadAttr_t Motor_Attributes;
 extern const osThreadAttr_t defaultTask_attributes;
 extern const osThreadAttr_t watchDogNRF_attributes;
-
+extern const osThreadAttr_t compass_attributes;
+extern const osThreadAttr_t gps_attributes;
 /************************************
  * HANDLER
  ***********************************/
@@ -54,6 +60,9 @@ extern osThreadId_t MotorTaskHandle;
 extern osThreadId_t VoltageTaskHandle;
 extern osThreadId_t ListeningNrfHandle;
 extern osThreadId_t WatchDogNRFHandle;
+extern osThreadId_t CompassHandle;
+extern osThreadId_t GpsHandle;
+
 /***************************************
  * MUTEX ET QUEUE
  **************************************/
@@ -101,4 +110,6 @@ void MotorTask(void *argument);
 void VoltageTask(void *argument);
 void InitQueue(void);
 void WatchDogNrfTask(void *argument);
+void CompassTask(void *argument);
+void GpsTask(void *argument);
 #endif /* INC_RTOS_TASK_H_ */
