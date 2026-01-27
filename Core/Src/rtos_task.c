@@ -18,23 +18,28 @@ volatile uint8_t servo_angle_droit = 0;
 volatile bool requestVoltage = false;
 volatile uint32_t last_cmd_tick = 0;
 volatile uint8_t nrfConnected = 0;
-
+volatile uint32_t bData = 0;
+volatile uint8_t homeReturn = 0;
+uint32_t adc_buffer[10];
 uint8_t result;
 uint8_t payload[PAYLOAD_SIZE];
+uint8_t timer_home = 0;
 int minimum_servo_gauche = 90;
 
+KalmanCap_t kalman;
+KalmanConfig_t kalmanConfig;
 
-osThreadId_t defaultTaskHandle;
+/*osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityLow,
-};
+};*/
 
 osThreadId_t ListeningNrfHandle;
 const osThreadAttr_t listener_attr = {
     .name = "ListeningNRF",
-    .priority =  osPriorityRealtime,
+    .priority =  osPriorityHigh,
     .stack_size = 1024 * 4
 };
 
@@ -50,13 +55,6 @@ const osThreadAttr_t Motor_Attributes = {
 	.name = "MotorTask",
 	.priority = osPriorityAboveNormal,
 	.stack_size = 512 * 4
-};
-
-osThreadId_t VoltageTaskHandle;
-const osThreadAttr_t voltageTask_attributes = {
-		.name = "VoltageTask",
-		.priority = osPriorityAboveNormal,
-		.stack_size = 512 * 4
 };
 
 osThreadId_t WatchDogNRFHandle;
@@ -77,10 +75,22 @@ osThreadId_t GpsHandle;
 const osThreadAttr_t gps_attributes = {
 		.name = "GPSTask",
 		.priority = osPriorityNormal,
+		.stack_size = 256 * 4
+};
+
+osThreadId_t BatteryHandle;
+const osThreadAttr_t battery_attributes = {
+		.name = "BatteryTask",
+		.priority = osPriorityAboveNormal,
 		.stack_size = 512 * 4
 };
 
-
+osThreadId_t ReturnHomeHandle;
+const osThreadAttr_t returnHome_attributes = {
+		.name = "ReturnToHomeTask",
+		.priority = osPriorityAboveNormal,
+		.stack_size = 512 * 4
+};
 
 const osMutexAttr_t nrfMutex_attributes = {
     .name = "nrfMutex"
@@ -89,8 +99,16 @@ QueueHandle_t joyQueue = NULL;
 int packet = 0;
 osMutexId_t nrfMutex;
 
+float GetAngularSpeed(float lHeading, float nHeading, TickType_t lTime, TickType_t nTime) {
+    float diffHeading = nHeading - lHeading;
+    if (diffHeading > 180.0f)  diffHeading -= 360.0f;
+    if (diffHeading < -180.0f) diffHeading += 360.0f;
+    float dt = (float)(nTime - lTime) * portTICK_PERIOD_MS / 1000.0f;
+    if (dt <= 0.0f) return 0.0f;
+    return diffHeading / dt;
+}
 
-void StartDefaultTask(void *argument)
+/*void StartDefaultTask(void *argument)
 {
     uint8_t local_payload[PAYLOAD_SIZE];
     uint8_t handshake_ok = 0;
@@ -128,9 +146,9 @@ void StartDefaultTask(void *argument)
     osDelay(10);
     osThreadFlagsSet(MotorTaskHandle, START_FLAG);
     osThreadFlagsSet(ListeningNrfHandle, START_FLAG);
-    osThreadFlagsSet(VoltageTaskHandle, START_FLAG);
     osThreadFlagsSet(CompassHandle , START_FLAG);
     osThreadFlagsSet(GpsHandle , START_FLAG);
+    osThreadFlagsSet(BatteryHandle, START_FLAG);
     LOG_INFO("Toutes les tâches démarrées\r\n");
 
     for(;;)
@@ -138,7 +156,7 @@ void StartDefaultTask(void *argument)
         osDelay(1000);
     }
 }
-
+*/
 /**********************************************
  *
  **********************************************/
@@ -184,39 +202,35 @@ void process_command(uint8_t command) {
 }
 
 void CompassTask(void *argument){
-	osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
-	for(;;){
-		if (QMC5883P_ReadXYZ(&mag, &magData) == QMC_OK)
-		  {
-			  printf("X:%.2f Y:%.2f Z:%.2f %f \r\n",
-					 magData.x, magData.y, magData.z , magData.heading);
-		  }
-		  float heading = QMC5883P_GetHeadingDeg(&mag, 0.0f);
-		  LOG_INFO("HEADING = %f\n\r", heading);
-		  osDelay(100);
-	}
+    osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
 
-}
+    TickType_t lastTime = xTaskGetTickCount();
+    TickType_t nowTime;
+    int init_attempts = 0;
 
+    while(QMC5883P_ReadXYZ(&mag, &magData) != QMC_OK) {
+        osDelay(10);
+        if(++init_attempts > 100) break;
+    }
+    float start_heading = QMC5883P_GetHeadingDeg(&mag, 0.0f) + DECLINATION_FRANCE;
+    KalmanConfigInit(&kalmanConfig, start_heading, 5.0f, 1.0f, 0.01f, 0.1f, 2.0f, 1.0f, 0.95f);
+    KalmanInitWithConfig(&kalman, &kalmanConfig);
 
-void WatchDogNrfTask(void *argument){
-	uint32_t flags;
-	for(;;){
-		flags = osThreadFlagsWait(
-		            CMD_ALIVE_FLAG,
-		            osFlagsWaitAny,
-		            300
-			);
-		if(!(flags & CMD_ALIVE_FLAG)){
-			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_8);
-			nrfConnected = 0;
-		}
-		else
-		{
-			nrfConnected = 1;
-		}
+    for(;;){
+        nowTime = xTaskGetTickCount();
+        float dt = (float)(nowTime - lastTime) / 1000.0f;
+        if (dt <= 0.0f) dt = 0.05f;
 
-	}
+        if(QMC5883P_ReadXYZ(&mag, &magData) == QMC_OK){
+            float rawHeading = QMC5883P_GetHeadingDeg(&mag, 0.0f) + DECLINATION_FRANCE;
+            KalmanPredict(&kalman, dt);
+            kalman.compass.cap_boussole = rawHeading;
+            KalmanUpdate(&kalman);
+        }
+
+        lastTime = nowTime;
+        osDelay(50);
+    }
 }
 
 void MotorTask(void *argument)
@@ -261,7 +275,7 @@ void ListeningNrf(void *argument)
                     cmd.y = buffer[2];
                     packet++;
                     printf("X:%u Y=%u\r\n",cmd.x,cmd.y);
-                    osDelay(50);
+                    osDelay(20);
                     xQueueOverwrite(joyQueue, &cmd);
                     osThreadFlagsSet(WatchDogNRFHandle, CMD_ALIVE_FLAG);
                 }
@@ -324,19 +338,102 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
 	}
 }
 
-
 void GpsTask(void *argument) {
     uint32_t size;
+    memset(&pos_depart, 0, sizeof(pos_depart));
+    bool home_is_set = false;
     HAL_UARTEx_ReceiveToIdle_DMA(&huart4, gps_data, PAYLOAD_GPS_SIZE);
     osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
     for(;;) {
         if (xTaskNotifyWait(0, 0, &size, portMAX_DELAY) == pdPASS) {
             if (size > 0 && size < PAYLOAD_GPS_SIZE) {
                 gps_data[size] = '\0';
+
                 if (strstr((char*)gps_data, "RMC")) {
                     ParseGPS_RMC((char*)gps_data);
+                    KalmanUpdateGps(&kalman);
+                    if(!home_is_set && gpsStructData.latitude != 0.0f) {
+                        pos_depart.latitude = gpsStructData.latitude;
+                        pos_depart.longitude = gpsStructData.longitude;
+                        home_is_set = true;
+                        LOG_INFO("HOME SET\r\n");
+                    }
                 }
             }
         }
     }
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+    if (hadc->Instance == ADC1) {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        vTaskNotifyGiveFromISR(BatteryHandle, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+
+}
+
+
+void WatchDogNrfTask(void *argument){
+	uint32_t flags;
+	for(;;){
+		flags = osThreadFlagsWait(
+		            CMD_ALIVE_FLAG,
+		            osFlagsWaitAny,
+		            300
+			);
+		if(!(flags & CMD_ALIVE_FLAG)){
+			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_8);
+			ESC_SetThrottle_D(1500); //Passage au neutre pour éviter que le bateau avance tout seul
+			ESC_SetThrottle_G(1500);
+			nrfConnected = 0;
+			timer_home++;
+			if(timer_home>TIME_BEFORE_HOME && !homeReturn){
+				xTaskNotifyGive(ReturnHomeHandle);
+				homeReturn = 1;
+			}
+		}
+		else
+		{
+			timer_home = 0;
+			nrfConnected = 1;
+			homeReturn = 0;
+		}
+
+	}
+}
+
+void BatteryTask(void *argument){
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, NUMBER_CAPTURE);
+    for(;;){
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)) == pdPASS) {
+            uint32_t sum = 0;
+            uint32_t mean = 0;
+            float voltage_tmp = 0;
+            float current_tmp = 0;
+            for(int i = 0; i < NUMBER_CAPTURE ; i++) sum += adc_buffer[i];
+            mean = (sum/NUMBER_CAPTURE);
+            voltage_tmp = ADC_To_Voltage(mean);
+            current_tmp = Voltage_To_Current(voltage_tmp);
+            float v_sensor = voltage_tmp / 0.6644f;
+            LOG_INFO("COURANT = %f VOLTAGE = %f SENSOR = %f\n\r", current_tmp,voltage_tmp,v_sensor);
+
+        }
+        else {
+            if (HAL_ADC_GetState(&hadc1) != HAL_ADC_STATE_BUSY_REG) {
+                HAL_ADC_Stop_DMA(&hadc1);
+                HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, NUMBER_CAPTURE);
+            }
+        }
+        osDelay(50);
+    }
+}
+
+void ReturnToHomeTask(void *argument){
+	for(;;){
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		while(homeReturn){
+
+		}
+	}
 }

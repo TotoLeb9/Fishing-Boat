@@ -8,167 +8,154 @@
 #include "motor.h"
 #include <stdlib.h>
 #include <math.h>
-#define PWM_MIN 1400
-#define PWM_MAX 1600
-#define PWM_NEUTRAL 1500
-#define DEADZONE 5
+#include <stdio.h>
+
+#define PWM_FULL_REVERSE 1200
+#define PWM_NEUTRAL      1500
+#define PWM_FULL_FORWARD 1800
+
+#define INPUT_DEADZONE 3
+#define TURN_SENSITIVITY 0.6f
+#define ACCEL_RATE 0.05f
+
 #define JOY_MIN_X 20
 #define JOY_MAX_X 66
 #define JOY_CENTER_X 28
-#define JOY_MIN_Y 23
+
+#define JOY_MIN_Y 16
 #define JOY_MAX_Y 65
-#define JOY_CENTER_Y 44
-#define MIX_PERCENT 0.6f
+#define JOY_CENTER_Y 38
+
+static float current_speed_g = 0.0f;
+static float current_speed_d = 0.0f;
 
 /**
- * @brief Met le servo de gauche à un angle donné
- * @param uint8_t angle : Angle à appliquer au servo
- */
+* @brief Met le servo de gauche à un angle donné
+*/
 void Servo_SetAngleGauche(uint8_t angle)
 {
-	if (angle < 90){
-		angle = 180;
-	}
-    uint16_t pulse = 500 + ((2000 * angle) / 180);
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pulse);
+	if (angle < 90) angle = 180;
+	uint16_t pulse = 500 + ((2000 * angle) / 180);
+	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pulse);
 }
 
 /**
- * @brief Met le servo de droite à un angle donné
- * @param uint8_t angle : Angle à appliquer au servo
- */
+* @brief Met le servo de droite à un angle donné
+*/
 void Servo_SetAngleDroit(uint8_t angle)
 {
-	if (angle > 90){
-		angle = 0;
-	}
-    uint16_t pulse = 500 + ((2000 * angle) / 180);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pulse);
+	if (angle > 90) angle = 0;
+	uint16_t pulse = 500 + ((2000 * angle) / 180);
+	__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pulse);
 }
 
 /**
- * @brief Met le servo du bas à un angle donné
- * @param uint8_t angle : Angle à appliquer au servo
- */
+* @brief Met le servo du bas à un angle donné
+*/
 void Servo_SetAngleBas(uint8_t angle)
 {
-    if (angle > 180) angle = 180;
-    uint16_t pulse = 500 + ((2000 * angle) / 180);
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse);
+	if (angle > 180) angle = 180;
+	uint16_t pulse = 500 + ((2000 * angle) / 180);
+	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse);
 }
 
 /**
- * @brief Définit la vitesse de l'ESC droit
- * @param Pulsation en microsecondes
+ * @brief Convertit valeur joystick en float -1.0 à +1.0 avec zone morte
+ * @param val Valeur brute du joystick
+ * @param inverted 1 si l'axe est inversé (ex: Y où haut < bas), sinon 0
  */
-void ESC_SetThrottle_D(uint16_t pulse_us)
+float Normalize_Input(uint8_t val, uint8_t min, uint8_t center, uint8_t max, uint8_t inverted)
 {
-    if(pulse_us < 1000) pulse_us = 1000;
-    if(pulse_us > 2000) pulse_us = 2000;
+    if (abs((int)val - center) <= INPUT_DEADZONE) {
+        return 0.0f;
+    }
+    float result = 0.0f;
+    if (val < center) {
+        float range = (float)(center - min);
+        if (range <= 0) range = 1;
+        result = (float)(val - center) / range;
+    } else {
+        float range = (float)(max - center);
+        if (range <= 0) range = 1;
+        result = (float)(val - center) / range;
+    }
+    if (result > 1.0f) result = 1.0f;
+    if (result < -1.0f) result = -1.0f;
+    return inverted ? -result : result;
+}
+
+/**
+ * @brief Applique une rampe d'accélération pour éviter les chocs
+ */
+float Smooth_Transition(float current, float target)
+{
+    float diff = target - current;
+    if (fabsf(diff) <= ACCEL_RATE) {
+        return target;
+    }
+    if (diff > 0) return current + ACCEL_RATE;
+    else return current - ACCEL_RATE;
+}
+
+/**
+ * @brief Convertit le float final en impulsion PWM (us)
+ */
+uint16_t Float_To_PWM(float value)
+{
+    if (fabsf(value) < 0.01f) return PWM_NEUTRAL;
+
+    if (value > 0.0f) {
+        return (uint16_t)(PWM_NEUTRAL + (value * (PWM_FULL_FORWARD - PWM_NEUTRAL)));
+    } else {
+        return (uint16_t)(PWM_NEUTRAL + (value * (PWM_NEUTRAL - PWM_FULL_REVERSE)));
+    }
+}
+
+
+void ESC_SetThrottle_D(uint16_t pulse_us) {
+    if (pulse_us < PWM_FULL_REVERSE) pulse_us = PWM_FULL_REVERSE;
+    if (pulse_us > PWM_FULL_FORWARD) pulse_us = PWM_FULL_FORWARD;
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pulse_us);
 }
 
-/**
- * @brief Définit la vitesse de l'ESC gauche
- * @param Pulsation en microsecondes
- */
-void ESC_SetThrottle_G(uint16_t pulse_us)
-{
-    if(pulse_us < 1000) pulse_us = 1000;
-    if(pulse_us > 2000) pulse_us = 2000;
+void ESC_SetThrottle_G(uint16_t pulse_us) {
+    if (pulse_us < PWM_FULL_REVERSE) pulse_us = PWM_FULL_REVERSE;
+    if (pulse_us > PWM_FULL_FORWARD) pulse_us = PWM_FULL_FORWARD;
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, pulse_us);
 }
 
-long map(long x, long in_min, long in_max, long out_min, long out_max) {
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
-}
-
-uint16_t clamp_pwm(uint16_t v) {
-    if (v < PWM_MIN) return PWM_MIN;
-    if (v > PWM_MAX) return PWM_MAX;
-    return v;
-}
-
 /**
- * @brief Convertit une valeur float [-1.0, 1.0] en PWM ESC
- * @param value -1.0 = full reverse, 0 = neutre, 1.0 = full forward
- * @return PWM en µs
- */
-uint16_t map_joy_to_pwm(uint8_t y)
-{
-    if (y < JOY_MIN_Y) y = JOY_MIN_Y;
-    if (y > JOY_MAX_Y) y = JOY_MAX_Y;
-
-    if (y >= (JOY_CENTER_Y - DEADZONE) && y <= (JOY_CENTER_Y + DEADZONE)) {
-        return PWM_NEUTRAL;
-    }
-
-    if (y > JOY_CENTER_Y + DEADZONE) {
-        return map(y, JOY_CENTER_Y + DEADZONE, JOY_MAX_Y, PWM_NEUTRAL, PWM_MAX);
-    }
-
-    if (y < JOY_CENTER_Y - DEADZONE) {
-        return map(y, JOY_MIN_Y, JOY_CENTER_Y - DEADZONE, PWM_MIN, PWM_NEUTRAL);
-    }
-
-    return PWM_NEUTRAL;
-}
-
-
-float map_to_float(uint8_t val, uint8_t min, uint8_t center, uint8_t max) {
-    int16_t diff = (int16_t)val - center;
-
-    if (abs(diff) <= DEADZONE) return 0.0f;
-
-    if (diff > 0) {
-        float range = (float)(max - center - DEADZONE);
-        if (range <= 0) return 1.0f;
-        float result = (float)(diff - DEADZONE) / range;
-        return (result > 1.0f) ? 1.0f : result;
-    } else {
-        float range = (float)(center - DEADZONE - min);
-        if (range <= 0) return -1.0f;
-        float result = (float)(diff + DEADZONE) / range;
-        return (result < -1.0f) ? -1.0f : result;
-    }
-}
-
-/**
- * @brief Convertit les valeurs du joystick en PWM pour moteurs gauche/droite
- * @param x Position X joystick (JOY_MIN_X → JOY_MAX_X)
- * @param y Position Y joystick (JOY_MIN_Y → JOY_MAX_Y)
- *
- * Cette fonction :
- * - Mappe le joystick sur [-1,1] en tenant compte de la deadzone
- * - Applique un mixage différentiel pour tourner
- * - Normalise les valeurs si elles dépassent [-1,1]
- * - Convertit les valeurs float en PWM
- *
- * @note ESC classiques mono-sens : PWM < PWM_NEUTRAL n'entraîne pas marche arrière
+ * @brief Cœur du pilotage Différentiel
  */
 void Handle_Joystick(uint8_t x, uint8_t y)
 {
-    float throttle = map_to_float(y, JOY_MIN_Y, JOY_CENTER_Y, JOY_MAX_Y);
-    float turn = map_to_float(x, JOY_MIN_X, JOY_CENTER_X, JOY_MAX_X);
-    float turn_influence = 0.35f;
-    float left = throttle + (turn * turn_influence);
-    float right = throttle - (turn * turn_influence);
-    float max_val = fmaxf(fabsf(left), fabsf(right));
+    float throttle = Normalize_Input(y, JOY_MIN_Y, JOY_CENTER_Y, JOY_MAX_Y, 0);
+    float steering = Normalize_Input(x, JOY_MIN_X, JOY_CENTER_X, JOY_MAX_X, 0);
+    float target_g = throttle + (steering * TURN_SENSITIVITY);
+    float target_d = throttle - (steering * TURN_SENSITIVITY);
+    float max_val = fmaxf(fabsf(target_g), fabsf(target_d));
     if (max_val > 1.0f) {
-        left /= max_val;
-        right /= max_val;
+        target_g /= max_val;
+        target_d /= max_val;
     }
+    current_speed_g = Smooth_Transition(current_speed_g, target_g);
+    current_speed_d = Smooth_Transition(current_speed_d, target_d);
+    uint16_t pwm_g = Float_To_PWM(current_speed_g);
+    uint16_t pwm_d = Float_To_PWM(current_speed_d);
 
-    uint16_t pwm_g, pwm_d;
-
-    if (throttle == 0.0f && turn == 0.0f) {
-        pwm_g = PWM_NEUTRAL;
-        pwm_d = PWM_NEUTRAL;
-    } else {
-        pwm_g = PWM_NEUTRAL + (int16_t)(left * (left > 0 ? (PWM_MAX - PWM_NEUTRAL) : (PWM_NEUTRAL - PWM_MIN)));
-        pwm_d = PWM_NEUTRAL + (int16_t)(right * (right > 0 ? (PWM_MAX - PWM_NEUTRAL) : (PWM_NEUTRAL - PWM_MIN)));
-    }
-
-    ESC_SetThrottle_G(pwm_g);  // ← Vérifiez aussi cette inversion !
+    ESC_SetThrottle_G(pwm_g);
     ESC_SetThrottle_D(pwm_d);
+}
+
+/**
+ * @brief Initialisation
+ */
+void ESC_Initialize(void)
+{
+    current_speed_g = 0.0f;
+    current_speed_d = 0.0f;
+
+    ESC_SetThrottle_G(PWM_NEUTRAL);
+    ESC_SetThrottle_D(PWM_NEUTRAL);
+    HAL_Delay(3000);
 }

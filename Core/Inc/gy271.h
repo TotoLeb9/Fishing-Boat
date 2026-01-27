@@ -13,8 +13,11 @@
 #include <stdbool.h>
 #include <math.h>
 #include "log.h"
+#include "FreeRTOS.h"
+
 /* Adresse I2C du QMC5883P */
 #define QMC5883P_ADDR      (0x2C << 1)
+#define DECLINATION_FRANCE 1.88
 
 /* Registres */
 #define QMC_REG_CHIP_ID        0x00
@@ -63,6 +66,13 @@ typedef struct {
     uint32_t lastReadTime;
     uint32_t minInterval;  // ms
 } QMC5883P_t;
+
+typedef struct {
+	float cap_boussole;
+	TickType_t timestamp;
+	bool isDataReady;
+}Compass;
+
 
 extern QMC5883P_t mag;
 extern QMC5883P_Data_t magData;

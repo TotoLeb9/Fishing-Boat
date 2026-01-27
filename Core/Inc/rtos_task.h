@@ -17,6 +17,8 @@
 #include <stdbool.h>
 #include "gy271.h"
 #include "gps.h"
+#include "battery.h"
+#include "ekf.h"
 
 #define LED         10
 #define PHARE       20
@@ -28,6 +30,8 @@
 #define MAX_RETRY_VOLTAGE 5
 #define START_FLAG 0x01
 #define CMD_ALIVE_FLAG (1<<0)
+#define NUMBER_CAPTURE 10
+#define TIME_BEFORE_HOME 10
 
 typedef struct
 {
@@ -36,32 +40,38 @@ typedef struct
     uint32_t tick;      // Tick RTOS de réception
 } JoyCmd_t;
 
+extern volatile uint32_t bData;
 extern QMC5883P_t mag;
 extern QMC5883P_Data_t magData;
-
+extern ADC_HandleTypeDef hadc1;
 extern INA219_HandleTypedef ina219_sensor;
+extern GPS_Pos pos_depart;
+extern KalmanCap_t kalman;
+extern KalmanConfig_t kalmanConfig;
 /***************************************
  * TASK ATTRIBUTES
  **************************************/
 extern const osThreadAttr_t listener_attr;
-extern const osThreadAttr_t voltageTask_attributes;
 extern const osThreadAttr_t debugfifo_attr;
 extern const osThreadAttr_t Motor_Attributes;
-extern const osThreadAttr_t defaultTask_attributes;
+//extern const osThreadAttr_t defaultTask_attributes;
 extern const osThreadAttr_t watchDogNRF_attributes;
 extern const osThreadAttr_t compass_attributes;
 extern const osThreadAttr_t gps_attributes;
+extern const osThreadAttr_t battery_attributes;
+extern const osThreadAttr_t returnHome_attributes;
 /************************************
  * HANDLER
  ***********************************/
-extern osThreadId_t defaultTaskHandle;
+//extern osThreadId_t defaultTaskHandle;
 extern osThreadId_t DebugNrfFifoHandle;
 extern osThreadId_t MotorTaskHandle;
-extern osThreadId_t VoltageTaskHandle;
 extern osThreadId_t ListeningNrfHandle;
 extern osThreadId_t WatchDogNRFHandle;
 extern osThreadId_t CompassHandle;
 extern osThreadId_t GpsHandle;
+extern osThreadId_t BatteryHandle;
+extern osThreadId_t ReturnHomeHandle;
 
 /***************************************
  * MUTEX ET QUEUE
@@ -112,4 +122,5 @@ void InitQueue(void);
 void WatchDogNrfTask(void *argument);
 void CompassTask(void *argument);
 void GpsTask(void *argument);
+void BatteryTask(void *argument);
 #endif /* INC_RTOS_TASK_H_ */
