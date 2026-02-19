@@ -223,10 +223,6 @@ typedef struct {
 } KalmanCap_t;
 
 
-// ============================================================================
-// STRUCTURE D'INITIALISATION (optionnel, pour organiser le code)
-// ============================================================================
-
 typedef struct {
     Compass compass;            // Cap de démarrage (lu de la boussole)
     GPS_Struct gps;

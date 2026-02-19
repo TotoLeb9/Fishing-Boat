@@ -156,17 +156,6 @@ void SetServoStarting(uint8_t gauche, uint8_t droit, uint8_t bas){
 	Servo_SetAngleBas(bas);
 }
 
-void ESC_Calibrate_Sequence(void)
-{
-    ESC_SetThrottle_G(2000);
-    printf("CALIBRATION : Signal MAX envoyé. Branchez l'ESC...\n");
-    osDelay(3000);
-    printf("CALIBRATION : Passage au MINIMUM...\n");
-    ESC_SetThrottle_G(1500);
-    osDelay(2000);
-    printf("CALIBRATION : Terminée !\n");
-}
-
 uint8_t InitNrf(void){
 	LOG_INFO("\r\n========================================\r\n");
 	LOG_INFO("     NRF24L01+ - MODE RECEIVER\r\n");
@@ -189,6 +178,7 @@ uint8_t InitNrf(void){
 	  }
 	  nrf24_start_listening();
 	  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET);
+	  LOG_INFO("END NRF");
 	  return 1;
 }
 
@@ -236,11 +226,18 @@ int main(void)
 
   init_tim();
   HAL_Delay(100);
-  SetServoStarting(90, 90, 90);
+  SetServoStarting(90, 0, 90);
+  //ESC_ZTW_Force_Calibration();
+  ESC_Initialize();
+  //ESC_ZTW_EnterProgramMode();
+  //ESC_ZTW_Set_RunningMode_Value2();
+  //ESC_ZTW_Calibration_Bidirectional();
+  LOG_INFO("PASS");
   do{
 	  isConnected = InitNrf();
 	  counter_nrf ++;
 	  HAL_Delay(150);
+	  printf("ERROR %u", counter_nrf);
   }
   while(!isConnected && counter_nrf < TIMEOUT_NRF);
   if(!isConnected)Error_Handler();
@@ -251,6 +248,7 @@ int main(void)
       }
   QMC5883P_SetHardIronOffsets(&mag, -0.14f, 0.02f, -0.39f);
   QMC5883P_SetSoftIronScales(&mag, 0.838f, 0.753f, 2.087f);
+  printf("DONE");
   //CompassCalibration();
   /* USER CODE END 2 */
 
@@ -288,6 +286,7 @@ int main(void)
   CompassHandle = osThreadNew(CompassTask, NULL, &compass_attributes);
   GpsHandle = osThreadNew(GpsTask, NULL, &gps_attributes);
   BatteryHandle = osThreadNew(BatteryTask, NULL, &battery_attributes);
+  ReturnHomeHandle = osThreadNew(ReturnToHomeTask, NULL, &returnHome_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -674,7 +673,7 @@ static void MX_UART4_Init(void)
 
   /* USER CODE END UART4_Init 1 */
   huart4.Instance = UART4;
-  huart4.Init.BaudRate = 115200;
+  huart4.Init.BaudRate = 38400;
   huart4.Init.WordLength = UART_WORDLENGTH_8B;
   huart4.Init.StopBits = UART_STOPBITS_1;
   huart4.Init.Parity = UART_PARITY_NONE;
@@ -875,7 +874,6 @@ void StartDefaultTask(void *argument)
     {
         LOG_INFO("ERREUR: Handshake échoué !\r\n");
     }
-
     nrf24_start_listening();
     osDelay(10);
     osThreadFlagsSet(MotorTaskHandle, START_FLAG);
@@ -885,7 +883,6 @@ void StartDefaultTask(void *argument)
     osThreadFlagsSet(CompassHandle , START_FLAG);
     osDelay(10);
     osThreadFlagsSet(GpsHandle , START_FLAG);
-
     osThreadFlagsSet(BatteryHandle, START_FLAG);
     LOG_INFO("Toutes les tâches démarrées\r\n");
 

@@ -123,4 +123,5 @@ void WatchDogNrfTask(void *argument);
 void CompassTask(void *argument);
 void GpsTask(void *argument);
 void BatteryTask(void *argument);
+void ReturnToHomeTask(void *argument);
 #endif /* INC_RTOS_TASK_H_ */

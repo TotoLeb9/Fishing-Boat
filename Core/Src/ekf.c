@@ -104,3 +104,20 @@ void KalmanUpdateGps(KalmanCap_t *kf){
 	kf->P[1][1] -= k_speed * P01_temp;
 	kf->nb_updates_gps++;
 }
+/*
+ * 0 = tout droit
+ * 1 = gauche
+ * 2 = droit
+ */
+uint8_t DirectionToGo(float actual_cap, float cap_to_go){
+	float diff = NormalizeAngle180(actual_cap - cap_to_go);
+	if(diff>0){
+		return 2;
+	}
+	else if(diff<0){
+		return 1;
+	}
+	else{
+		return 0;
+	}
+}

@@ -102,6 +102,6 @@ void ParseGPS_RMC(char *gpsData) {
         if (*p == ',') p++;
 
     }
-    LOG_INFO("SPEED = %f , LATTITUDE = %f, LONGITUDE = %f, AZIMUTH = %u =\n\r", gpsStructData.groundSpeed, gpsStructData.latitude, gpsStructData.longitude, gpsStructData.azimuth);
+    LOG_INFO("SPEED = %f , LATTITUDE = %f, LONGITUDE = %f, AZIMUTH = %f =\n\r", gpsStructData.groundSpeed, gpsStructData.latitude, gpsStructData.longitude, gpsStructData.azimuth);
 }
 
