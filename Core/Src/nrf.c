@@ -4,8 +4,8 @@
 // VARIABLES GLOBALES
 // ============================================================================
 static NRF24_Registers nrf24_regs;
-uint8_t nrf24_tx_address[5] = {0xE6, 0xE7, 0xE7, 0xE7, 0xE7};
-uint8_t nrf24_rx_address[5] = {0xE6, 0xE7, 0xE7, 0xE7, 0xE7};
+uint8_t nrf24_tx_address[5] = {0xE6, 0xE6, 0xE6, 0xE6, 0xE6};
+uint8_t nrf24_rx_address[5] = {0xE6, 0xE6, 0xE6, 0xE6, 0xE6};
 
 // ============================================================================
 // FONCTIONS PRIVÉES - CONTRÔLE GPIO
@@ -313,17 +313,12 @@ void nrf24_stop_listening(void) {
  * @return  1 si données disponibles, 0 sinon
  */
 uint8_t nrf24_available(void) {
-    uint8_t status = read_status();
-
-    // Bit 6 (RX_DR) = 1 si données reçues
-    if (status & (1<<6)) {
-        return 1;
-    }
-
-    // Alternative : vérifier FIFO_STATUS
     uint8_t fifo_status;
     nrf24_read_register(NRF24_FIFO_STATUS, &fifo_status, 1);
-    return !(fifo_status & 0x01);  // RX_EMPTY = 0 si FIFO non vide
+
+    // RX_EMPTY (bit 0) = 1 si vide, = 0 si données dispo
+    if (fifo_status & 0x01) return 0;  // FIFO vide
+    return 1;                           // données dispo
 }
 
 /**
@@ -503,7 +498,7 @@ void check_config(uint8_t config, uint8_t status, uint8_t fifo, uint8_t en_aa, u
 /**
  * @brief Bascule entre mode LISTENER (RX) et SENDER (TX) - VERSION CORRIGÉE
  */
-void switchState(STATE_NRF state)
+/*void switchState(STATE_NRF state)
 {
     ce_low();
     osDelay(2);  // Attendre que CE soit bien bas
@@ -539,7 +534,7 @@ void switchState(STATE_NRF state)
     else if (state == SENDER)
     {
         // Configurer pour ENVOYER vers E6
-        uint8_t tx_address[5] = {0xE6, 0xE7, 0xE7, 0xE7, 0xE7};
+        uint8_t tx_address[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
         nrf24_write_register(NRF24_TX_ADDR, tx_address, 5);
         nrf24_write_register(NRF24_RX_ADDR_P0, tx_address, 5);  // Pour ACK
 
@@ -560,7 +555,7 @@ void switchState(STATE_NRF state)
         LOG_INFO("Mode SENDER actif, TX_ADDR = E6:E7:E7:E7:E7\r\n");
     }
 }
-
+*/
 /**
  * @brief Envoie un paquet ET attend une réponse avec basculement automatique TX->RX->TX
  * @param tx_data : Données à envoyer
@@ -660,10 +655,16 @@ uint8_t nrf24_write_and_wait_response(uint8_t *tx_data, uint8_t tx_len,
     // Timeout - revenir en TX
     ce_low();
     osDelay(1);
+    nrf24_write_register(NRF24_RX_ADDR_P0, nrf24_rx_address, 5);
+    nrf24_write_register(NRF24_RX_ADDR_P1, nrf24_rx_address, 5);
+
     nrf24_read_register(NRF24_CONFIG, &config, 1);
-    config &= ~(1<<0);
+    config |= (1<<0);
     config |= (1<<1);
     nrf24_write_register(NRF24_CONFIG, &config, 1);
+    clear_status_flags(0x70);
+    flush_rx();
+    ce_high();
     osDelay(2);
 
     return 0;

@@ -67,11 +67,11 @@ DMA_HandleTypeDef hdma_uart4_rx;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 512 * 4,
+  .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
-uint8_t rx_address[5] = {0xE6, 0xE7, 0xE7, 0xE7, 0xE7};
+uint8_t rx_address[5] = {0xE6, 0xE6, 0xE6, 0xE6, 0xE6};
 uint32_t packets_received = 0;
 uint32_t last_received_time = 0;
 
@@ -169,16 +169,15 @@ uint8_t InitNrf(void){
 	  HAL_Delay(100);
 	  nrf24_set_rx_address(nrf24_rx_address, 0);
 	  nrf24_set_tx_address(nrf24_rx_address);
-	  if (HAL_GPIO_ReadPin(NRF_CE_GPIO_Port, NRF_CE_Pin) == GPIO_PIN_SET) {
-	      LOG_INFO("CE: HIGH (OK)\r\n");
+	  if (HAL_GPIO_ReadPin(NRF_CE_GPIO_Port, NRF_CE_Pin) == GPIO_PIN_RESET) {
+	      LOG_INFO("CE: LOW (OK - standby mode)\r\n");  // ← C'EST NORMAL
 	  } else {
-	      LOG_ERROR("CE: LOW (ERROR!)\r\n");
-	      LOG_ERROR("Forcing CE HIGH...\r\n");
-	      HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_SET);
+	      LOG_ERROR("CE: HIGH (ERROR!) - forcing LOW\r\n");
+	      HAL_GPIO_WritePin(NRF_CE_GPIO_Port, NRF_CE_Pin, GPIO_PIN_RESET);
 	  }
 	  nrf24_start_listening();
 	  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET);
-	  LOG_INFO("END NRF");
+
 	  return 1;
 }
 
@@ -226,7 +225,7 @@ int main(void)
 
   init_tim();
   HAL_Delay(100);
-  SetServoStarting(90, 0, 90);
+  SetServoStarting(30, 90, 90);
   //ESC_ZTW_Force_Calibration();
   ESC_Initialize();
   //ESC_ZTW_EnterProgramMode();
@@ -385,14 +384,14 @@ static void MX_ADC1_Init(void)
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ScanConvMode = ENABLE;
   hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -403,7 +402,16 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_13;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_144CYCLES;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_12;
+  sConfig.Rank = 2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -574,9 +582,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 83;
+  htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 20000;
+  htim2.Init.Period = 4294967295;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
@@ -843,53 +851,58 @@ static void MX_GPIO_Init(void)
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-    uint8_t local_payload[PAYLOAD_SIZE];
-    uint8_t handshake_ok = 0;
-    uint8_t retry = 0;
-    osDelay(100);
-    float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
-    uint16_t vbus_mv = (uint16_t)(Vbus * 100.0f);
-    memset(local_payload, 0, PAYLOAD_SIZE);
-    local_payload[0] = 0xEE;
-    local_payload[1] = (vbus_mv >> 8) & 0xFF;
-    local_payload[2] = (vbus_mv & 0xFF);
+  /* USER CODE BEGIN 5 */
+	uint8_t local_payload[PAYLOAD_SIZE];
+	uint8_t handshake_ok = 0;
+	uint8_t retry = 0;
+	osDelay(100);
+	//float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
+	uint16_t vbus_mv = (uint16_t)(1 * 100.0f);
+	memset(local_payload, 0, PAYLOAD_SIZE);
+	local_payload[0] = 0xEE;
+	local_payload[1] = (vbus_mv >> 8) & 0xFF;
+	local_payload[2] = (vbus_mv & 0xFF);
 
-    LOG_INFO("Envoi handshake, voltage: %u mV\r\n", vbus_mv);
-    while(!handshake_ok && retry < 10)
-    {
-        if(nrf24_write(local_payload, PAYLOAD_SIZE))
-        {
-            handshake_ok = 1;
-            LOG_INFO("Handshake envoyé !\r\n");
-        }
-        else
-        {
-            retry++;
-            LOG_INFO("Retry handshake %u/10\r\n", retry);
-            osDelay(100);
-        }
-    }
+	LOG_INFO("Envoi handshake, voltage: %u mV\r\n", vbus_mv);
+	while(!handshake_ok && retry < 10)
+	{
+		if(nrf24_write(local_payload, PAYLOAD_SIZE))
+		{
+			handshake_ok = 1;
+			LOG_INFO("Handshake envoyé !\r\n");
+		}
+		else
+		{
+			retry++;
+			//LOG_INFO("Retry handshake %u/10\r\n", retry);
+			osDelay(100);
+		}
+	}
 
-    if(!handshake_ok)
-    {
-        LOG_INFO("ERREUR: Handshake échoué !\r\n");
-    }
-    nrf24_start_listening();
-    osDelay(10);
-    osThreadFlagsSet(MotorTaskHandle, START_FLAG);
-    osDelay(10);
-    osThreadFlagsSet(ListeningNrfHandle, START_FLAG);
-    osDelay(10);
-    osThreadFlagsSet(CompassHandle , START_FLAG);
-    osDelay(10);
-    osThreadFlagsSet(GpsHandle , START_FLAG);
-    osThreadFlagsSet(BatteryHandle, START_FLAG);
-    LOG_INFO("Toutes les tâches démarrées\r\n");
+	/*if(!handshake_ok)
+	{
+		LOG_INFO("ERREUR: Handshake échoué !\r\n");
+	}*/
 
-    for(;;)
-    {
-        osDelay(1000);
-    }
+	nrf24_start_listening();
+	osDelay(10);
+	osThreadFlagsSet(MotorTaskHandle, START_FLAG);
+	osDelay(10);
+	osThreadFlagsSet(ListeningNrfHandle, START_FLAG);
+	osDelay(10);
+	osThreadFlagsSet(CompassHandle , START_FLAG);
+	osDelay(10);
+	osThreadFlagsSet(GpsHandle , START_FLAG);
+	osDelay(10);
+	osThreadFlagsSet(BatteryHandle, START_FLAG);
+	osDelay(10);
+	LOG_INFO("Toutes les tâches démarrées\r\n");
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1000);
+  }
+  /* USER CODE END 5 */
 }
 
 /**

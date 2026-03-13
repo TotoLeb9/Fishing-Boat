@@ -19,11 +19,14 @@
 #include "gps.h"
 #include "battery.h"
 #include "ekf.h"
+#include "telemetry.h"
+
 
 #define LED         10
 #define PHARE       20
 #define SERVO_DROIT 30
 #define SERVO_GAUCHE 40
+#define SERVO_ARRIERE 50
 #define DEAD_ZONE 50
 #define MID_LEFT_RIGHT 430
 #define DEBOUNCE_TIME_MS 200
@@ -32,6 +35,8 @@
 #define CMD_ALIVE_FLAG (1<<0)
 #define NUMBER_CAPTURE 10
 #define TIME_BEFORE_HOME 10
+#define KP_HEADING  0.01f
+#define HOME_THROTTLE  0.5f
 
 typedef struct
 {

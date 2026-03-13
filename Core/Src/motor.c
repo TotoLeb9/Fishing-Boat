@@ -2,12 +2,6 @@
 #include <stdlib.h>
 #include <math.h>
 
-/* --- CONFIGURATION PWM --- */
-#define PWM_FULL_REVERSE 1000 // Standard ESC
-#define PWM_NEUTRAL      1500
-#define PWM_FULL_FORWARD 2000 // Standard ESC
-
-/* --- CALIBRATION JOYSTICK (Tes valeurs réelles) --- */
 #define JOY_MIN_X 0
 #define JOY_MAX_X 255
 #define JOY_CENTER_X 126       // Ajusté au milieu de 20 et 120
@@ -38,6 +32,7 @@ void ESC_SetThrottle_G(uint16_t pulse_us) {
 void Servo_SetAngleGauche(uint8_t angle) {
     if (angle > 180) angle = 180;
     uint16_t pulse = 500 + ((2000 * angle) / 180);
+
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pulse);
 }
 
@@ -45,6 +40,7 @@ void Servo_SetAngleDroit(uint8_t angle) {
     if (angle > 180) angle = 180;
     uint16_t pulse = 500 + ((2000 * angle) / 180);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, pulse);
+
 }
 
 void Servo_SetAngleBas(uint8_t angle) {
@@ -52,8 +48,6 @@ void Servo_SetAngleBas(uint8_t angle) {
     uint16_t pulse = 500 + ((2000 * angle) / 180);
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, pulse);
 }
-
-/* --- LOGIQUE DE CALCUL --- */
 
 /**
  * Normalise l'entrée malgré l'asymétrie
@@ -93,11 +87,11 @@ uint16_t Float_To_PWM(float value) {
  */
 void Handle_Joystick(uint8_t x, uint8_t y)
 {
-    float throttle = Normalize_Input(y, JOY_MIN_Y, JOY_CENTER_Y, JOY_MAX_Y);
+	float throttle = Normalize_Input(y, JOY_MAX_Y, JOY_CENTER_Y, JOY_MIN_Y);
     float steering = Normalize_Input(x, JOY_MIN_X, JOY_CENTER_X, JOY_MAX_X);
 
     // Zone morte sur le steering
-    if (fabsf(steering) < 0.20f) {
+    if (fabsf(steering) < 0.05f) {
         steering = 0.0f;
     }
 
@@ -111,18 +105,12 @@ void Handle_Joystick(uint8_t x, uint8_t y)
         target_g /= max_v;
         target_d /= max_v;
     }
-
-    // Lissage
     current_speed_g = Smooth_Transition(current_speed_g, target_g);
     current_speed_d = Smooth_Transition(current_speed_d, target_d);
-
-    // **APPLICATION DES CORRECTIONS AVANT ENVOI**
     float corrected_g = current_speed_g * MOTOR_LEFT_CORRECTION;
     float corrected_d = current_speed_d * MOTOR_RIGHT_CORRECTION;
-
-    // Envoi aux moteurs
-    ESC_SetThrottle_G(Float_To_PWM(corrected_g));
-    ESC_SetThrottle_D(Float_To_PWM(corrected_d));
+    ESC_SetThrottle_G(Float_To_PWM(corrected_d));
+    ESC_SetThrottle_D(Float_To_PWM(corrected_g));
 }
 
 /**
@@ -139,6 +127,7 @@ void ESC_Initialize(void)
     HAL_Delay(3000);
 }
 
+/*
 void ESC_ZTW_Calibration_Bidirectional(void)
 {
     printf("\n=== ZTW SHARK G2 CALIBRATION (FORWARD / REVERSE) ===\n\r");
@@ -217,3 +206,4 @@ void ESC_ZTW_Set_RunningMode_Value2(void)
     printf("\n✔ RUNNING MODE = VALUE 2 SAUVEGARDÉ\n\r");
     printf("Retour automatique au STEP #2 (menu principal)\n\r");
 }
+*/

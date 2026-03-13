@@ -15,12 +15,17 @@
 
 volatile uint8_t servo_angle_gauche = 180;
 volatile uint8_t servo_angle_droit = 0;
+volatile uint8_t servo_angle_arriere = 0;
 volatile bool requestVoltage = false;
 volatile uint32_t last_cmd_tick = 0;
 volatile uint8_t nrfConnected = 0;
 volatile uint32_t bData = 0;
 volatile uint8_t homeReturn = 0;
-volatile uint16_t adc_buffer[10];
+volatile uint16_t adc_buffer[NUMBER_CAPTURE*2];
+volatile uint16_t conso = 0;
+volatile uint16_t telem_distance = 0;
+volatile float batterie = 0.0;
+volatile uint8_t bat_percent = 0;
 uint8_t result;
 uint8_t payload[PAYLOAD_SIZE];
 uint8_t timer_home = 0;
@@ -75,14 +80,14 @@ osThreadId_t GpsHandle;
 const osThreadAttr_t gps_attributes = {
 		.name = "GPSTask",
 		.priority = osPriorityNormal,
-		.stack_size = 256 * 4
+		.stack_size = 512 * 4
 };
 
 osThreadId_t BatteryHandle;
 const osThreadAttr_t battery_attributes = {
 		.name = "BatteryTask",
 		.priority = osPriorityNormal,
-		.stack_size = 512 * 4
+		.stack_size = 1024 * 4
 };
 
 osThreadId_t ReturnHomeHandle;
@@ -165,21 +170,28 @@ void process_command(uint8_t command) {
 	static uint32_t last_led_time = 0;
 	uint32_t current_time = HAL_GetTick();
     switch (command) {
-        case SERVO_DROIT:
-            if (servo_angle_gauche > 90) servo_angle_gauche -= 30;
-            else servo_angle_gauche=180;
-            Servo_SetAngleGauche(servo_angle_gauche);
-            LOG_INFO("Commande : 0x%02X\r\n", command);
-            LOG_INFO("Servo angle droit: %d°\r\n", servo_angle_gauche);
-            break;
+    case SERVO_DROIT:
+        if (servo_angle_droit > 0) servo_angle_droit -= 5;
+        else servo_angle_droit = 90;
+        Servo_SetAngleDroit(servo_angle_droit);
+        LOG_INFO("Servo angle droit: %d°\r\n", servo_angle_droit);
+        break;
 
-        case SERVO_GAUCHE:
-                    if (servo_angle_droit < 90) servo_angle_droit += 15;
-                    else servo_angle_droit=0;
-                    Servo_SetAngleDroit(servo_angle_droit);
-                    LOG_INFO("Commande : 0x%02X\r\n", command);
-                    LOG_INFO("Servo angle gauche: %d°\r\n", servo_angle_droit);
-                    break;
+    case SERVO_GAUCHE:
+        if (servo_angle_gauche < 90) servo_angle_gauche += 5;
+        else servo_angle_gauche = 0;
+        Servo_SetAngleGauche(servo_angle_gauche);
+        LOG_INFO("Servo angle gauche: %d°\r\n", servo_angle_gauche);
+        break;
+
+    case SERVO_ARRIERE:
+    	if (servo_angle_arriere < 90) servo_angle_arriere += 5;
+    	        else servo_angle_arriere = 0;
+    	        Servo_SetAngleBas(servo_angle_arriere);
+    	        LOG_INFO("Servo angle bas: %d°\r\n", servo_angle_arriere);
+    	        break;
+
+
         case PHARE:
         	if (current_time - last_phare_time >= DEBOUNCE_TIME_MS) {
         	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_12);
@@ -215,14 +227,15 @@ void CompassTask(void *argument){
     float start_heading = QMC5883P_GetHeadingDeg(&mag, 0.0f) + DECLINATION_FRANCE;
     KalmanConfigInit(&kalmanConfig, start_heading, 5.0f, 1.0f, 0.01f, 0.1f, 2.0f, 1.0f, 0.95f);
     KalmanInitWithConfig(&kalman, &kalmanConfig);
-
     for(;;){
         nowTime = xTaskGetTickCount();
         float dt = (float)(nowTime - lastTime) / 1000.0f;
         if (dt <= 0.0f) dt = 0.05f;
 
         if(QMC5883P_ReadXYZ(&mag, &magData) == QMC_OK){
-            float rawHeading = QMC5883P_GetHeadingDeg(&mag, 0.0f) + DECLINATION_FRANCE;
+            float rawHeading = QMC5883P_GetHeadingDeg(&mag, 0.0f) + DECLINATION_FRANCE + 143;
+            if(rawHeading >= 360.0f) rawHeading -= 360.0f;
+            if(rawHeading <    0.0f) rawHeading += 360.0f;
             KalmanPredict(&kalman, dt);
             kalman.compass.cap_boussole = rawHeading;
             KalmanUpdate(&kalman);
@@ -235,6 +248,7 @@ void CompassTask(void *argument){
 
 void MotorTask(void *argument)
 {
+	LOG_INFO("MOTOR");
     JoyCmd_t joy_values;
     osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
     for (;;)
@@ -257,10 +271,10 @@ void ListeningNrf(void *argument)
 {
 	osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
     uint8_t buffer[PAYLOAD_SIZE];
-    uint8_t buffer_tx[PAYLOAD_SIZE];
+    LOG_INFO("LISTENING\n\r");
     for (;;)
     {
-    	if (osMutexAcquire(nrfMutex, 10) == osOK) {
+    	if (osMutexAcquire(nrfMutex, 100) == osOK) {
 
 
         if (nrf24_available())
@@ -274,8 +288,7 @@ void ListeningNrf(void *argument)
                     cmd.x = buffer[1];
                     cmd.y = buffer[2];
                     packet++;
-                    printf("X:%u Y=%u\r\n",cmd.x,cmd.y);
-                    osDelay(5);
+                    //printf("X:%u Y=%u\r\n",cmd.x,cmd.y);
                     xQueueOverwrite(joyQueue, &cmd);
                     osThreadFlagsSet(WatchDogNRFHandle, CMD_ALIVE_FLAG);
                 }
@@ -289,28 +302,32 @@ void ListeningNrf(void *argument)
 
                 else if (buffer[0] >= 0xC0 && buffer[0] <= 0xCF)
                 {
-                	 LOG_INFO("Demande voltage reçue\r\n");
-					float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
-					uint16_t vbus_mv = (uint16_t)(Vbus * 100.0f);
-					memset(buffer_tx, 0, PAYLOAD_SIZE);
-					buffer_tx[0] = 0xDD;
-					buffer_tx[1] = (vbus_mv >> 8) & 0xFF;
-					buffer_tx[2] = 0xAA;
+                	Telemetry telem;
+                	telem.header = 0xDD;
+                	telem.cap = (uint16_t)kalman.cap;
+                	telem.vitesse = (int16_t)gpsStructData.groundSpeed;
+                	telem.batterie = bat_percent;
+                	telem.longitude = (int32_t)gpsStructData.longitude;
+                	telem.latitude = (int32_t)gpsStructData.latitude;
+                	telem.conso_live = conso;
+                	telem.distance = telem_distance;
+                	LOG_INFO("%u",telem.conso_live);
 					nrf24_stop_listening();
 					osDelay(2);
-					uint8_t tx_result = nrf24_write(buffer_tx, PAYLOAD_SIZE);
-					LOG_INFO("Voltage envoyé: %u mV (result=%u)\r\n", vbus_mv, tx_result);
+					uint8_t tx_telem[PAYLOAD_SIZE];
+					memset(tx_telem, 0, PAYLOAD_SIZE);
+					memcpy(tx_telem, &telem, sizeof(Telemetry));
+					nrf24_write(tx_telem, PAYLOAD_SIZE);
+					//LOG_INFO("Voltage envoyé\n\r");
 					osDelay(2);
 					nrf24_start_listening();
                 }
-
             }
-            osMutexRelease(nrfMutex);
         }
-
-        osDelay(5);
+        osMutexRelease(nrfMutex);
+        osDelay(10);
+    	}
     }
-}
 }
 
 void DebugFifoNrf(void *argument)
@@ -320,7 +337,6 @@ void DebugFifoNrf(void *argument)
     {
     	float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
     	LOG_INFO("%d", (int)(Vbus * 1000));
-
 		uint8_t status_check, fifo_check;
 		nrf24_read_register(NRF24_STATUS, &status_check, 1);
 		nrf24_read_register(NRF24_FIFO_STATUS, &fifo_check, 1);
@@ -343,30 +359,49 @@ void GpsTask(void *argument) {
     uint32_t size;
     memset(&pos_depart, 0, sizeof(pos_depart));
     bool home_is_set = false;
-
+    InitGpsValues();
     osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
     HAL_UARTEx_ReceiveToIdle_DMA(&huart4, gps_data, PAYLOAD_GPS_SIZE);
     __HAL_DMA_DISABLE_IT(huart4.hdmarx, DMA_IT_HT);
     LOG_INFO("GPS START\r\n");
 
     for(;;) {
-        if (xTaskNotifyWait(0, 0xFFFFFFFF, &size, pdMS_TO_TICKS(2000)) == pdPASS) {
+        if(xTaskNotifyWait(0, 0xFFFFFFFF, &size, pdMS_TO_TICKS(2000)) == pdPASS) {
 
-            if (size > 0 && size < PAYLOAD_GPS_SIZE) {
+            if(size > 0 && size < PAYLOAD_GPS_SIZE) {
                 gps_data[size] = '\0';
-                if (strstr((char*)gps_data, "$GPRMC") || strstr((char*)gps_data, "$GNRMC")) {
+                if(strstr((char*)gps_data, "$GNGLL") || strstr((char*)gps_data, "$GPGLL"))
+                    ParseGPS_GLL((char*)gps_data);
+                else if(strstr((char*)gps_data, "$GNRMC") || strstr((char*)gps_data, "$GPRMC"))
                     ParseGPS_RMC((char*)gps_data);
+                else {
+                    HAL_UARTEx_ReceiveToIdle_DMA(&huart4, gps_data, PAYLOAD_GPS_SIZE);
+                    __HAL_DMA_DISABLE_IT(huart4.hdmarx, DMA_IT_HT);
+                    osDelay(10);
+                    continue;
+                }
+
+                if(gpsStructData.isValid) {
                     KalmanUpdateGps(&kalman);
-                    printf("%s\n\r",gps_data);
+                    LOG_INFO("%s\n\r", gps_data);
                     if(!home_is_set && gpsStructData.latitude != 0.0f) {
-                        pos_depart.latitude = gpsStructData.latitude;
+                        pos_depart.latitude  = gpsStructData.latitude;
                         pos_depart.longitude = gpsStructData.longitude;
                         home_is_set = true;
                         LOG_INFO("HOME SET: %.6f, %.6f\r\n",
-                                 pos_depart.latitude, pos_depart.longitude);
+                                  pos_depart.latitude, pos_depart.longitude);
+                    }
+                    if(home_is_set) {
+                        telem_distance = (uint16_t)GetDistanceHaversine(
+                        	    pos_depart.latitude,
+                        	    gpsStructData.latitude,
+                        	    pos_depart.longitude,
+                        	    gpsStructData.longitude
+                        	);;
                     }
                 }
             }
+
             HAL_UARTEx_ReceiveToIdle_DMA(&huart4, gps_data, PAYLOAD_GPS_SIZE);
             __HAL_DMA_DISABLE_IT(huart4.hdmarx, DMA_IT_HT);
 
@@ -384,13 +419,14 @@ void GpsTask(void *argument) {
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     if (hadc->Instance == ADC1) {
+        if(BatteryHandle == NULL) {
+            return;
+        }
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
         vTaskNotifyGiveFromISR(BatteryHandle, &xHigherPriorityTaskWoken);
         portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
-
 }
-
 
 void WatchDogNrfTask(void *argument){
 	uint32_t flags;
@@ -418,43 +454,119 @@ void WatchDogNrfTask(void *argument){
 			nrfConnected = 1;
 			homeReturn = 0;
 		}
-
 	}
 }
 
 void BatteryTask(void *argument){
-	osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
-    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, NUMBER_CAPTURE);
-    for(;;){
-        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)) == pdPASS) {
-            uint32_t sum = 0;
-            uint32_t mean = 0;
-            float voltage_tmp = 0;
-            float current_tmp = 0;
-            for(int i = 0; i < NUMBER_CAPTURE ; i++) sum += adc_buffer[i];
-            mean = (sum/NUMBER_CAPTURE);
-            voltage_tmp = ADC_To_Voltage(mean);
-            current_tmp = Voltage_To_Current(voltage_tmp);
-            float v_sensor = voltage_tmp / 0.6644f;
-            printf("COURANT = %f VOLTAGE = %f SENSOR = %f\n\r", current_tmp,voltage_tmp,v_sensor);
+    osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
 
+    static float    remaining_mah = BAT_CAPACITY_MAH;
+    static uint32_t last_tick     = 0;
+    last_tick = osKernelGetTickCount();
+
+    // Lancement propre, une seule fois
+    HAL_StatusTypeDef st = HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, NUMBER_CAPTURE * 2);
+    LOG_INFO("ADC DMA start: %d\r\n", st);  // doit afficher 0
+
+    LOG_INFO("BATTERIE\n\r");
+    for(;;){
+        if(ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)) > 0)
+        {
+            uint32_t sum_i = 0, sum_v = 0;
+            for(int i = 0; i < NUMBER_CAPTURE * 2; i += 2){
+                sum_i += adc_buffer[i];
+                sum_v += adc_buffer[i + 1];
+            }
+            uint32_t mean_i = sum_i / NUMBER_CAPTURE;
+            uint32_t mean_v = sum_v / NUMBER_CAPTURE;
+
+            float voltage_current = ADC_To_Voltage(mean_i);
+            float current_tmp     = Voltage_To_Current(voltage_current);
+            if(current_tmp < 0.0f) current_tmp = 0.0f;
+            conso = (uint16_t)(current_tmp * 1000.0f);
+
+            float voltage_batt = ADC_To_BattVoltage(mean_v);
+            bat_percent = BattVoltage_To_Percent(voltage_batt);
+
+            uint32_t now = osKernelGetTickCount();
+            float dt_h   = (float)(now - last_tick) / 3600000.0f;
+            last_tick    = now;
+            remaining_mah -= current_tmp * 1000.0f * dt_h;
+            if(remaining_mah < 0.0f)             remaining_mah = 0.0f;
+            if(remaining_mah > BAT_CAPACITY_MAH) remaining_mah = BAT_CAPACITY_MAH;
+
+            //LOG_INFO("I=%.3fA | V=%.2fV | %u%% | %.0fmAh\r\n",
+                      //current_tmp, voltage_batt, bat_percent, remaining_mah);
+            // Pas de Start_DMA ici → DMA_CIRCULAR se relance tout seul
         }
         else {
-            if (HAL_ADC_GetState(&hadc1) != HAL_ADC_STATE_BUSY_REG) {
-                HAL_ADC_Stop_DMA(&hadc1);
-                HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, NUMBER_CAPTURE);
-            }
+            LOG_INFO("ADC timeout, restart\r\n");
+            HAL_ADC_Stop_DMA(&hadc1);
+            HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, NUMBER_CAPTURE * 2);
         }
-        osDelay(50);
+        osDelay(100);
     }
 }
 
-void ReturnToHomeTask(void *argument){
-	for(;;){
-		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-		while(homeReturn){
-			osDelay(50);
-			LOG_INFO("ANGLE : %f | VITESSE : %f\n\r",kalman.cap, kalman.vitesse_angulaire);
-		}
-	}
+
+void ReturnToHomeTask(void *argument)
+{
+    for(;;)
+    {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        static float current_speed_g = 0.0f;
+        static float current_speed_d = 0.0f;
+        while(homeReturn)
+        {
+            float distance = GetDistanceHaversine(
+                gpsStructData.latitude,  gpsStructData.longitude,
+                pos_depart.latitude,     pos_depart.longitude
+            );
+
+            if(distance < 2.0f)
+            {
+                ESC_SetThrottle_G(PWM_NEUTRAL);
+                ESC_SetThrottle_D(PWM_NEUTRAL);
+                LOG_INFO("HOME ATTEINT\r\n");
+                homeReturn = 0;
+                break;
+            }
+
+            float bearing = GetBearing(
+                gpsStructData.latitude,  gpsStructData.longitude,
+                pos_depart.latitude,     pos_depart.longitude
+            );
+
+            float error = bearing - kalman.cap;
+            error = NormalizeAngle180(error);
+            float steering = error * KP_HEADING;
+            if(steering >  1.0f) steering =  1.0f;
+            if(steering < -1.0f) steering = -1.0f;
+            float throttle = HOME_THROTTLE;
+            if(distance < 10.0f)
+                throttle = HOME_THROTTLE * (distance / 10.0f);
+            float target_g = throttle + (steering * TURN_SENSITIVITY);
+            float target_d = throttle - (steering * TURN_SENSITIVITY);
+
+            float max_v = fmaxf(fabsf(target_g), fabsf(target_d));
+            if(max_v > 1.0f) {
+                target_g /= max_v;
+                target_d /= max_v;
+            }
+
+            current_speed_g = Smooth_Transition(current_speed_g, target_g);
+            current_speed_d = Smooth_Transition(current_speed_d, target_d);
+
+            ESC_SetThrottle_G(Float_To_PWM(current_speed_g * MOTOR_LEFT_CORRECTION));
+            ESC_SetThrottle_D(Float_To_PWM(current_speed_d * MOTOR_RIGHT_CORRECTION));
+
+            LOG_INFO("DIST=%.1fm | BRG=%.1f | CAP=%.1f | ERR=%.1f | ST=%.2f\r\n",
+                     distance, bearing, kalman.cap, error, steering);
+
+            osDelay(200);
+        }
+
+        ESC_SetThrottle_G(PWM_NEUTRAL);
+        ESC_SetThrottle_D(PWM_NEUTRAL);
+    }
 }
