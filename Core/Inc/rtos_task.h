@@ -13,13 +13,14 @@
 #include "nrf.h"
 #include "log.h"
 #include "motor.h"
-#include "ina219.h"
 #include <stdbool.h>
 #include "gy271.h"
 #include "gps.h"
 #include "battery.h"
 #include "ekf.h"
 #include "telemetry.h"
+#include "esp_com.h"
+
 
 
 #define LED         10
@@ -27,7 +28,7 @@
 #define SERVO_DROIT 30
 #define SERVO_GAUCHE 40
 #define SERVO_ARRIERE 50
-#define DEAD_ZONE 50
+#define MODE_BOAT 60
 #define MID_LEFT_RIGHT 430
 #define DEBOUNCE_TIME_MS 200
 #define MAX_RETRY_VOLTAGE 5
@@ -37,6 +38,17 @@
 #define TIME_BEFORE_HOME 10
 #define KP_HEADING  0.01f
 #define HOME_THROTTLE  0.5f
+#define SAMPLE_RATE_GPS_HOME 20
+#define LEFT_DOOR_OPEN 0
+#define RIGHT_DOOR_OPEN 0
+#define INCREMENT_DOOR 15
+#define HOME_TIMEOUT_MS   120000   // 2 minutes max
+#define KD_HEADING        0.05f    // À ajuster selon comportement
+#define SERVO_STEP_MS   20      // Période de mise à jour
+#define SERVO_RATE       2
+#define MAX_LARGAGE 16
+#define UART_RX_BUF_SIZE  256
+#define UART_TX_BUF_SIZE  256
 
 typedef struct
 {
@@ -49,7 +61,6 @@ extern volatile uint32_t bData;
 extern QMC5883P_t mag;
 extern QMC5883P_Data_t magData;
 extern ADC_HandleTypeDef hadc1;
-extern INA219_HandleTypedef ina219_sensor;
 extern GPS_Pos pos_depart;
 extern KalmanCap_t kalman;
 extern KalmanConfig_t kalmanConfig;
@@ -65,6 +76,8 @@ extern const osThreadAttr_t compass_attributes;
 extern const osThreadAttr_t gps_attributes;
 extern const osThreadAttr_t battery_attributes;
 extern const osThreadAttr_t returnHome_attributes;
+extern const osThreadAttr_t servo_attributes;
+extern const osThreadAttr_t espcom_attributes;
 /************************************
  * HANDLER
  ***********************************/
@@ -77,6 +90,8 @@ extern osThreadId_t CompassHandle;
 extern osThreadId_t GpsHandle;
 extern osThreadId_t BatteryHandle;
 extern osThreadId_t ReturnHomeHandle;
+extern osThreadId_t ServoTaskHandle;
+extern osThreadId_t EspComHandle;
 
 /***************************************
  * MUTEX ET QUEUE
@@ -129,4 +144,6 @@ void CompassTask(void *argument);
 void GpsTask(void *argument);
 void BatteryTask(void *argument);
 void ReturnToHomeTask(void *argument);
+void ServoTask(void *argument);
+void EspComTask(void* argument);
 #endif /* INC_RTOS_TASK_H_ */

@@ -15,11 +15,11 @@
 #include "nrf.h"
 #include <stdio.h>
 #include <string.h>
-#include "ina219.h"
 #include "motor.h"
 #include "log.h"
 #include "rtos_task.h"
 #include "gy271.h"
+#include "esp_com.h"
 
 /* USER CODE END Includes */
 
@@ -60,6 +60,7 @@ TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart4;
+UART_HandleTypeDef huart5;
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_uart4_rx;
 
@@ -75,7 +76,6 @@ uint8_t rx_address[5] = {0xE6, 0xE6, 0xE6, 0xE6, 0xE6};
 uint32_t packets_received = 0;
 uint32_t last_received_time = 0;
 
-INA219_HandleTypedef ina219_sensor;
 uint8_t config, status, fifo, en_aa, en_rxaddr;
 uint8_t rx_addr_p0[5];
 uint8_t isConnected = 0;
@@ -94,6 +94,7 @@ static void MX_TIM2_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_UART4_Init(void);
 static void MX_ADC1_Init(void);
+static void MX_UART5_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -221,11 +222,12 @@ int main(void)
   MX_I2C1_Init();
   MX_UART4_Init();
   MX_ADC1_Init();
+  MX_UART5_Init();
   /* USER CODE BEGIN 2 */
 
   init_tim();
   HAL_Delay(100);
-  SetServoStarting(30, 90, 90);
+  SetServoStarting(90, 0, 0);
   //ESC_ZTW_Force_Calibration();
   ESC_Initialize();
   //ESC_ZTW_EnterProgramMode();
@@ -279,13 +281,15 @@ int main(void)
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   ListeningNrfHandle = osThreadNew(ListeningNrf, NULL, &listener_attr);
-  DebugNrfFifoHandle = osThreadNew(DebugFifoNrf, NULL, &debugfifo_attr);
+  //DebugNrfFifoHandle = osThreadNew(DebugFifoNrf, NULL, &debugfifo_attr);
   MotorTaskHandle = osThreadNew(MotorTask, NULL, &Motor_Attributes);
   WatchDogNRFHandle = osThreadNew(WatchDogNrfTask, NULL, &watchDogNRF_attributes);
   CompassHandle = osThreadNew(CompassTask, NULL, &compass_attributes);
   GpsHandle = osThreadNew(GpsTask, NULL, &gps_attributes);
   BatteryHandle = osThreadNew(BatteryTask, NULL, &battery_attributes);
   ReturnHomeHandle = osThreadNew(ReturnToHomeTask, NULL, &returnHome_attributes);
+  ServoTaskHandle = osThreadNew(ServoTask,NULL,&servo_attributes);
+  EspComHandle = osThreadNew(EspComTask, NULL, &espcom_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -681,7 +685,7 @@ static void MX_UART4_Init(void)
 
   /* USER CODE END UART4_Init 1 */
   huart4.Instance = UART4;
-  huart4.Init.BaudRate = 38400;
+  huart4.Init.BaudRate = 115200;
   huart4.Init.WordLength = UART_WORDLENGTH_8B;
   huart4.Init.StopBits = UART_STOPBITS_1;
   huart4.Init.Parity = UART_PARITY_NONE;
@@ -695,6 +699,39 @@ static void MX_UART4_Init(void)
   /* USER CODE BEGIN UART4_Init 2 */
 
   /* USER CODE END UART4_Init 2 */
+
+}
+
+/**
+  * @brief UART5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_UART5_Init(void)
+{
+
+  /* USER CODE BEGIN UART5_Init 0 */
+
+  /* USER CODE END UART5_Init 0 */
+
+  /* USER CODE BEGIN UART5_Init 1 */
+
+  /* USER CODE END UART5_Init 1 */
+  huart5.Instance = UART5;
+  huart5.Init.BaudRate = 115200;
+  huart5.Init.WordLength = UART_WORDLENGTH_8B;
+  huart5.Init.StopBits = UART_STOPBITS_1;
+  huart5.Init.Parity = UART_PARITY_NONE;
+  huart5.Init.Mode = UART_MODE_TX_RX;
+  huart5.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart5.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN UART5_Init 2 */
+
+  /* USER CODE END UART5_Init 2 */
 
 }
 
@@ -768,9 +805,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5|LED_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, ESP_COM_Pin|GPIO_PIN_5|LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(PHARE_GPIO_Port, PHARE_Pin, GPIO_PIN_RESET);
@@ -786,6 +824,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ESP_COM_Pin */
+  GPIO_InitStruct.Pin = ESP_COM_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(ESP_COM_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PC5 */
   GPIO_InitStruct.Pin = GPIO_PIN_5;
@@ -852,51 +897,89 @@ static void MX_GPIO_Init(void)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-	uint8_t local_payload[PAYLOAD_SIZE];
-	uint8_t handshake_ok = 0;
-	uint8_t retry = 0;
-	osDelay(100);
-	//float Vbus = INA219_GetBusVoltage_V(&ina219_sensor);
-	uint16_t vbus_mv = (uint16_t)(1 * 100.0f);
-	memset(local_payload, 0, PAYLOAD_SIZE);
-	local_payload[0] = 0xEE;
-	local_payload[1] = (vbus_mv >> 8) & 0xFF;
-	local_payload[2] = (vbus_mv & 0xFF);
-
-	LOG_INFO("Envoi handshake, voltage: %u mV\r\n", vbus_mv);
-	while(!handshake_ok && retry < 10)
-	{
-		if(nrf24_write(local_payload, PAYLOAD_SIZE))
-		{
-			handshake_ok = 1;
-			LOG_INFO("Handshake envoyé !\r\n");
-		}
-		else
-		{
-			retry++;
-			//LOG_INFO("Retry handshake %u/10\r\n", retry);
-			osDelay(100);
-		}
+	uint8_t req;
+	static uint8_t rx_buf[256];
+	uint16_t len;
+	wakeUpEsp(ESP_COM_GPIO_Port, ESP_COM_Pin);
+	osDelay(500);
+	req = 0xA1;
+	HAL_UART_Transmit(&huart5, &req, 1, 100);
+	if (HAL_UARTEx_ReceiveToIdle(&huart5, rx_buf, sizeof(rx_buf),
+								  &len, 2000) == HAL_OK) {
+		rx_buf[len] = '\0';
+		parse_config_uart((char*)rx_buf);
+		LOG_INFO("Config reçue: %s\r\n", rx_buf);
+	} else {
+		LOG_INFO("Config: timeout, valeurs par défaut\r\n");
 	}
-
-	/*if(!handshake_ok)
-	{
-		LOG_INFO("ERREUR: Handshake échoué !\r\n");
-	}*/
-
+	req = 0xA2;
+	HAL_UART_Transmit(&huart5, &req, 1, 100);
+	if (HAL_UARTEx_ReceiveToIdle(&huart5, rx_buf, sizeof(rx_buf),
+								  &len, 2000) == HAL_OK) {
+		rx_buf[len] = '\0';
+		parse_gps_array_uart((char*)rx_buf);
+		LOG_INFO("GPS reçu: %s\r\n", rx_buf);
+	} else {
+		LOG_INFO("GPS: timeout, tableau vide\r\n");
+	}
 	nrf24_start_listening();
+	printf("ECOUTE\n\r");
 	osDelay(10);
-	osThreadFlagsSet(MotorTaskHandle, START_FLAG);
-	osDelay(10);
-	osThreadFlagsSet(ListeningNrfHandle, START_FLAG);
-	osDelay(10);
-	osThreadFlagsSet(CompassHandle , START_FLAG);
-	osDelay(10);
-	osThreadFlagsSet(GpsHandle , START_FLAG);
-	osDelay(10);
-	osThreadFlagsSet(BatteryHandle, START_FLAG);
-	osDelay(10);
-	LOG_INFO("Toutes les tâches démarrées\r\n");
+	if (MotorTaskHandle != NULL) {
+	        osThreadFlagsSet(MotorTaskHandle, START_FLAG);
+	    } else {
+	        printf("ERREUR: MotorTask non creee !\r\n");
+	    }
+	    osDelay(10);
+	    printf("DONNNE\n\r");
+	    // --- NRF24 ---
+	    if (ListeningNrfHandle != NULL) {
+	        osThreadFlagsSet(ListeningNrfHandle, START_FLAG);
+	    } else {
+	        printf("ERREUR: ListeningNrfTask non creee !\r\n");
+	    }
+	    osDelay(10);
+
+	    // --- BOUSSOLE ---
+	    if (CompassHandle != NULL) {
+	        osThreadFlagsSet(CompassHandle, START_FLAG);
+	    } else {
+	        printf("ERREUR: CompassTask non creee !\r\n");
+	    }
+	    osDelay(10);
+
+	    // --- GPS ---
+	    if (GpsHandle != NULL) {
+	        osThreadFlagsSet(GpsHandle, START_FLAG);
+	    } else {
+	        printf("ERREUR: GpsTask non creee !\r\n");
+	    }
+	    osDelay(10);
+
+	    // --- BATTERIE ---
+	    if (BatteryHandle != NULL) {
+	        osThreadFlagsSet(BatteryHandle, START_FLAG);
+	    } else {
+	        printf("ERREUR: BatteryTask non creee !\r\n");
+	    }
+	    osDelay(10);
+
+	    // --- SERVOMOTEURS ---
+	    if (ServoTaskHandle != NULL) {
+	        osThreadFlagsSet(ServoTaskHandle, START_FLAG);
+	    } else {
+	        printf("ERREUR: ServoTask non creee !\r\n");
+	    }
+	    osDelay(10);
+
+	    //--- COM ESP32 ---
+	   if (EspComHandle != NULL) {
+	        osThreadFlagsSet(EspComHandle, START_FLAG);
+	    } else {
+	        LOG_INFO("ERREUR: EspComTask non creee !\r\n");
+	    }
+	    osDelay(10);
+	    printf("Toutes les tâches démarrées\r\n");
   /* Infinite loop */
   for(;;)
   {

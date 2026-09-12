@@ -10,6 +10,9 @@
 GPS_Struct gpsStructData;
 GPS_Pos pos_depart;
 uint8_t gps_data[PAYLOAD_GPS_SIZE];
+
+GPS_Calibration gpsCalib = {0};
+GPS_Filter gpsFilter= {0};
 const uint8_t cmd_baud[] = "$PUBX,41,1,0007,0003,115200,0*18\r\n";
 static const uint8_t ubx_rate_5hz[] = {
         0x06, 0x08, 0x06, 0x00,
@@ -237,7 +240,6 @@ void ParseGPS_GGA(char *gpsData)
             default:
                 break;
         }
-
         counter++;
 
         /* on a tout ce qu'il faut après le champ 8 */
@@ -278,8 +280,84 @@ void ParseGPS_GGA(char *gpsData)
 }
 */
 
-void InitGpsValues(void) {
+void SetHomeAccurate(void)
+{
+    gpsCalib.lat_acc  = 0.0;
+    gpsCalib.lon_acc  = 0.0;
+    gpsCalib.count    = 0;
+    gpsCalib.rejected = 0;
+    gpsCalib.state    = GPS_CALIB_RUNNING;
+    LOG_INFO("HOME | calibration démarrée (%d échantillons)\r\n",
+             GPS_CALIB_SAMPLES);
+}
 
+uint8_t GPS_UpdateHomeCalib(void)
+{
+    if (gpsCalib.state != GPS_CALIB_RUNNING) return 0;
+    if (!gpsStructData.isValid) {
+        gpsCalib.rejected++;
+        LOG_INFO("HOME | rejeté — fix invalide (%d/%d)\r\n",
+                 gpsCalib.count, GPS_CALIB_SAMPLES);
+        return 0;
+    }
+    if (gpsStructData.fixQuality < GPS_CALIB_FIX_MIN) {
+        gpsCalib.rejected++;
+        LOG_INFO("HOME | rejeté — EGNOS inactif fix=%d (%d/%d)\r\n",
+                 gpsStructData.fixQuality, gpsCalib.count, GPS_CALIB_SAMPLES);
+        return 0;
+    }
+    if (gpsStructData.satellites < GPS_CALIB_SAT_MIN) {
+        gpsCalib.rejected++;
+        LOG_INFO("HOME | rejeté — sats insuffisants %d<%d (%d/%d)\r\n",
+                 gpsStructData.satellites, GPS_CALIB_SAT_MIN,
+                 gpsCalib.count, GPS_CALIB_SAMPLES);
+        return 0;
+    }
+    if (gpsStructData.hdop > GPS_CALIB_HDOP_MAX) {
+        gpsCalib.rejected++;
+        LOG_INFO("HOME | rejeté — HDOP trop élevé %.1f>%.1f (%d/%d)\r\n",
+                 gpsStructData.hdop, GPS_CALIB_HDOP_MAX,
+                 gpsCalib.count, GPS_CALIB_SAMPLES);
+        return 0;
+    }
+    gpsCalib.lat_acc += (double)gpsStructData.latitude;
+    gpsCalib.lon_acc += (double)gpsStructData.longitude;
+    gpsCalib.count++;
+
+    LOG_INFO("HOME | [%d/%d] hdop=%.1f sats=%d fix=%d\r\n",
+             gpsCalib.count, GPS_CALIB_SAMPLES,
+             gpsStructData.hdop,
+             gpsStructData.satellites,
+             gpsStructData.fixQuality);
+
+    if (gpsCalib.count >= GPS_CALIB_SAMPLES) {
+        pos_depart.latitude  = (float)(gpsCalib.lat_acc / GPS_CALIB_SAMPLES);
+        pos_depart.longitude = (float)(gpsCalib.lon_acc / GPS_CALIB_SAMPLES);
+        gpsCalib.state       = GPS_CALIB_DONE;
+
+        LOG_INFO("HOME | ✅ fixé après %d rejetés\r\n", gpsCalib.rejected);
+        LOG_INFO("HOME | lat=%.7f  lon=%.7f\r\n",
+                 pos_depart.latitude, pos_depart.longitude);
+        return 1;
+    }
+
+    return 0;
+}
+
+void GPS_ApplyFilter(void)
+{
+    if (gpsFilter.lat_filtered == 0.0f && gpsFilter.lon_filtered == 0.0f) {
+        gpsFilter.lat_filtered = gpsStructData.latitude;
+        gpsFilter.lon_filtered = gpsStructData.longitude;
+        return;
+    }
+    gpsFilter.lat_filtered = GPS_ALPHA * gpsStructData.latitude
+                           + (1.0f - GPS_ALPHA) * gpsFilter.lat_filtered;
+    gpsFilter.lon_filtered = GPS_ALPHA * gpsStructData.longitude
+                           + (1.0f - GPS_ALPHA) * gpsFilter.lon_filtered;
+}
+
+void InitGpsValues(void) {
     HAL_UART_Transmit(&huart4, cmd_baud, sizeof(cmd_baud)-1, 100);
     LOG_INFO("CMD baud sent\r\n");
     HAL_Delay(500);
@@ -304,5 +382,4 @@ void InitGpsValues(void) {
 	HAL_Delay(2000);
 	HAL_UART_Transmit(&huart4, ubx_nav_sbas_poll, sizeof(ubx_nav_sbas_poll), 100);
 	LOG_INFO("[GPS 6/6] SBAS poll\r\n");
-
 }

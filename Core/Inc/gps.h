@@ -21,6 +21,11 @@
 #define DEG_TO_RAD      0.0174532925f
 #define RAD_TO_DEG      57.2958f
 #define MAX_POINT 50
+#define GPS_CALIB_SAMPLES       20      /* 20 × 200ms = ~4 secondes   */
+#define GPS_CALIB_HDOP_MAX      1.2f    /* plus strict que navigation  */
+#define GPS_CALIB_SAT_MIN       6       /* minimum 6 sats              */
+#define GPS_CALIB_FIX_MIN       2       /* EGNOS obligatoire           */
+#define GPS_ALPHA 0.3
 extern DMA_HandleTypeDef hdma_uart4_rx;
 
 typedef struct {
@@ -34,6 +39,28 @@ typedef struct {
     TickType_t  timestamp;
     uint8_t     isValid;
 } GPS_Struct;
+
+typedef struct {
+    float lat_filtered;
+    float lon_filtered;
+} GPS_Filter;
+
+typedef enum {
+    GPS_CALIB_IDLE    = 0,
+    GPS_CALIB_RUNNING = 1,
+    GPS_CALIB_DONE    = 2,
+} GPS_CalibState;
+
+typedef struct {
+    double         lat_acc;
+    double         lon_acc;
+    uint8_t        count;
+    uint8_t        rejected;
+    GPS_CalibState state;
+} GPS_Calibration;
+
+extern GPS_Calibration gpsCalib;
+extern GPS_Filter gpsFilter;
 
 typedef struct{
 	float latitude;
@@ -51,8 +78,11 @@ void ParseGPS_RMC(char *gpsData);
 uint8_t SetDataGps(const char* cmd);
 uint8_t GPS_Checksum(const char* cmd);
 void InitGpsValues(void);
-void ParseGPS_GLL(char* sentence);
-
+//void ParseGPS_GLL(char* sentence);
+void ParseGPS_GGA(char *gpsData);
+uint8_t GPS_UpdateHomeCalib(void);
+void SetHomeAccurate(void);
+void GPS_ApplyFilter(void);
 static inline float MilesToKm(float miles){
 	return miles*1.852;
 }

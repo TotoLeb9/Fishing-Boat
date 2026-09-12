@@ -85,7 +85,7 @@ uint16_t Float_To_PWM(float value) {
 /**
  * Pilotage différentiel
  */
-void Handle_Joystick(uint8_t x, uint8_t y)
+void Handle_Joystick(uint8_t x, uint8_t y, float left_correction, float right_correction)
 {
 	float throttle = Normalize_Input(y, JOY_MAX_Y, JOY_CENTER_Y, JOY_MIN_Y);
     float steering = Normalize_Input(x, JOY_MIN_X, JOY_CENTER_X, JOY_MAX_X);
@@ -107,8 +107,8 @@ void Handle_Joystick(uint8_t x, uint8_t y)
     }
     current_speed_g = Smooth_Transition(current_speed_g, target_g);
     current_speed_d = Smooth_Transition(current_speed_d, target_d);
-    float corrected_g = current_speed_g * MOTOR_LEFT_CORRECTION;
-    float corrected_d = current_speed_d * MOTOR_RIGHT_CORRECTION;
+    float corrected_g = current_speed_g * left_correction;
+    float corrected_d = current_speed_d * right_correction;
     ESC_SetThrottle_G(Float_To_PWM(corrected_d));
     ESC_SetThrottle_D(Float_To_PWM(corrected_g));
 }

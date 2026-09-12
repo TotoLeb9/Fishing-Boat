@@ -11,21 +11,21 @@
 #include "stm32f4xx_hal.h"
 #include <math.h>
 #include <stdio.h>
-#define PWM_FULL_REVERSE 1300 // Standard ESC
+#define PWM_FULL_REVERSE 1000 // Standard ESC
 #define PWM_NEUTRAL      1500
-#define PWM_FULL_FORWARD 1700 // Standard ESC
+#define PWM_FULL_FORWARD 2000 // Standard ESC
 
 #define PWM_HALF_RANGE (PWM_FULL_FORWARD - PWM_NEUTRAL)
 
 /* --- PARAMÈTRES PILOTAGE --- */
 
-#define INPUT_DEADZONE 3     // Réduit car ta plage basse est courte
+#define INPUT_DEADZONE 5     // Réduit car ta plage basse est courte
 #define TURN_SENSITIVITY 0.8f  // Réduit pour plus de stabilité
-#define ACCEL_RATE 0.07f       // Plus rapide pour plus de réactivité
-#define STEERING_DEADZONE 0.10f   // 5 %
-#define THROTTLE_DEADZONE 0.05f
-#define MOTOR_LEFT_CORRECTION   1.00f // Réduit la puissance du moteur gauche de 5%
-#define MOTOR_RIGHT_CORRECTION 1.00f   // Moteur droit = référence
+#define ACCEL_RATE 0.05f       // Plus rapide pour plus de réactivité
+#define STEERING_DEADZONE 0.05f   // 5 %
+#define THROTTLE_DEADZONE 0.08f
+//#define MOTOR_LEFT_CORRECTION   1.00f // Réduit la puissance du moteur gauche de 5%
+//#define MOTOR_RIGHT_CORRECTION 1.00f   // Moteur droit = référence
 #define JOY_MIN_X 0
 #define JOY_MAX_X 255
 #define JOY_CENTER_X 126       // Ajusté au milieu de 20 et 120
@@ -46,7 +46,7 @@ void ESC_SetThrottle_G(uint16_t pulse_us);
 uint16_t map_joy_to_pwm(uint8_t joy_y_value);
 int16_t map_value(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max);
 void generate_motor_outputs(uint8_t joy_x_value, uint8_t joy_y_value, uint16_t *pwm_g, uint16_t *pwm_d);
-void Handle_Joystick(uint8_t x, uint8_t y);
+void Handle_Joystick(uint8_t x, uint8_t y, float left_correction, float right_correction);
 void ESC_Initialize(void);
 float Smooth_Transition(float current, float target);
 uint16_t Float_To_PWM(float value);

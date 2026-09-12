@@ -13,7 +13,7 @@
  */
 #include "rtos_task.h"
 
-volatile uint8_t servo_angle_gauche = 180;
+volatile uint8_t servo_angle_gauche = 150;
 volatile uint8_t servo_angle_droit = 0;
 volatile uint8_t servo_angle_arriere = 0;
 volatile bool requestVoltage = false;
@@ -26,13 +26,18 @@ volatile uint16_t conso = 0;
 volatile uint16_t telem_distance = 0;
 volatile float batterie = 0.0;
 volatile uint8_t bat_percent = 0;
+static volatile uint8_t target_gauche  = 0;
+static volatile uint8_t target_droit   = 0;
+static volatile uint8_t target_arriere = 0;
+
 uint8_t result;
 uint8_t payload[PAYLOAD_SIZE];
 uint8_t timer_home = 0;
 int minimum_servo_gauche = 90;
-
+uint8_t eco_mode = 0;
 KalmanCap_t kalman;
 KalmanConfig_t kalmanConfig;
+GPS_Pos Pos_Largage[MAX_LARGAGE];
 
 /*osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
@@ -95,6 +100,20 @@ const osThreadAttr_t returnHome_attributes = {
 		.name = "ReturnToHomeTask",
 		.priority = osPriorityNormal,
 		.stack_size = 512 * 4
+};
+
+osThreadId_t ServoTaskHandle;
+const osThreadAttr_t servo_attributes = {
+    .name       = "ServoTask",
+    .priority   = osPriorityNormal,
+    .stack_size = 256 * 4
+};
+
+osThreadId_t EspComHandle;
+const osThreadAttr_t espcom_attributes = {
+    .name       = "EspComTask",
+    .priority   = osPriorityBelowNormal,
+    .stack_size = 256 * 4
 };
 
 const osMutexAttr_t nrfMutex_attributes = {
@@ -168,45 +187,46 @@ float GetAngularSpeed(float lHeading, float nHeading, TickType_t lTime, TickType
 void process_command(uint8_t command) {
 	static uint32_t last_phare_time = 0;
 	static uint32_t last_led_time = 0;
+	static uint32_t last_mode_time = 0;
 	uint32_t current_time = HAL_GetTick();
     switch (command) {
-    case SERVO_DROIT:
-        if (servo_angle_droit > 0) servo_angle_droit -= 5;
-        else servo_angle_droit = 90;
-        Servo_SetAngleDroit(servo_angle_droit);
-        LOG_INFO("Servo angle droit: %d°\r\n", servo_angle_droit);
-        break;
+		case SERVO_DROIT:
+			if (servo_angle_droit > 0) target_droit = 0;
+			else target_droit = 90;
+			break;
 
-    case SERVO_GAUCHE:
-        if (servo_angle_gauche < 90) servo_angle_gauche += 5;
-        else servo_angle_gauche = 0;
-        Servo_SetAngleGauche(servo_angle_gauche);
-        LOG_INFO("Servo angle gauche: %d°\r\n", servo_angle_gauche);
-        break;
+		case SERVO_GAUCHE:
+			if (servo_angle_gauche < 90) target_gauche = 90;
+			else target_gauche = 0;
+			break;
 
-    case SERVO_ARRIERE:
-    	if (servo_angle_arriere < 90) servo_angle_arriere += 5;
-    	        else servo_angle_arriere = 0;
-    	        Servo_SetAngleBas(servo_angle_arriere);
-    	        LOG_INFO("Servo angle bas: %d°\r\n", servo_angle_arriere);
-    	        break;
-
+		case SERVO_ARRIERE:
+			if (servo_angle_arriere < 90) target_arriere = 90;
+			else target_arriere = 0;
+			break;
 
         case PHARE:
         	if (current_time - last_phare_time >= DEBOUNCE_TIME_MS) {
-        	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_12);
-        	LOG_INFO("Commande : 0x%02X\r\n", command);
-        	last_phare_time = current_time;
-        	}
-        	break;
-        case LED:
-        	if (current_time - last_led_time >= DEBOUNCE_TIME_MS) {
-        	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_8);
-        	LOG_INFO("Commande  0x%02X\r\n", command);
-        	last_led_time = current_time;
+				HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_12);
+				LOG_INFO("Commande : 0x%02X\r\n", command);
+				last_phare_time = current_time;
         	}
         	break;
 
+        case LED:
+        	if (current_time - last_led_time >= DEBOUNCE_TIME_MS) {
+				HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_8);
+				LOG_INFO("Commande  0x%02X\r\n", command);
+				last_led_time = current_time;
+        	}
+        	break;
+
+        case MODE_BOAT:
+        	if (current_time - last_mode_time >= DEBOUNCE_TIME_MS) {
+        		eco_mode ^= 1;
+				last_mode_time = current_time;
+			}
+			break;
         default:
         	LOG_INFO("Commande inconnue: 0x%02X\r\n", command);
             break;
@@ -251,12 +271,100 @@ void MotorTask(void *argument)
 	LOG_INFO("MOTOR");
     JoyCmd_t joy_values;
     osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
+    printf("(I) MOTOR WAKING UP\r\n");
     for (;;)
     {
         if (xQueueReceive(joyQueue, &joy_values, portMAX_DELAY) == pdPASS)
         {
-        	Handle_Joystick(joy_values.x, joy_values.y);
+        	if(eco_mode){
+        		Handle_Joystick(joy_values.x, joy_values.y, 0.5f, 0.5f);
+        	}
+        	else{
+        		Handle_Joystick(joy_values.x, joy_values.y, 1.0f, 1.0f);
+        	}
         }
+    }
+}
+
+void EspComTask(void* argument) {
+	osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        EnregistrerLargage();
+    }
+}
+
+void ServoTask(void *argument)
+{
+    osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
+
+    static bool blink_done_gauche = false;
+    static bool blink_done_droit  = false;
+    static bool largage_gauche_ok = false;
+    static bool largage_droit_ok  = false;
+
+    for (;;)
+    {
+        if (servo_angle_gauche < target_gauche) {
+            servo_angle_gauche += SERVO_RATE;
+            if (servo_angle_gauche > target_gauche) servo_angle_gauche = target_gauche;
+            Servo_SetAngleGauche(servo_angle_gauche);
+        }
+        else if (servo_angle_gauche > target_gauche) {
+            servo_angle_gauche -= SERVO_RATE;
+            if (servo_angle_gauche < target_gauche) servo_angle_gauche = target_gauche;
+            Servo_SetAngleGauche(servo_angle_gauche);
+        }
+
+        if (servo_angle_gauche == 90 && !largage_gauche_ok) {
+            largage_gauche_ok = true;
+            xTaskNotifyGive(EspComHandle);
+        }
+        if (servo_angle_gauche == 0) largage_gauche_ok = false;
+
+        if (servo_angle_gauche == target_gauche) {
+            if (target_gauche == 90 && !blink_done_gauche) {
+                for (int i = 0; i < 5; i++) {
+                    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
+                    osDelay(100);
+                    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+                    osDelay(100);
+                }
+                blink_done_gauche = true;
+            }
+            if (target_gauche == 0) blink_done_gauche = false;
+        }
+        if (servo_angle_droit < target_droit) {
+            servo_angle_droit += SERVO_RATE;
+            if (servo_angle_droit > target_droit) servo_angle_droit = target_droit;
+            Servo_SetAngleDroit(servo_angle_droit);
+        }
+        else if (servo_angle_droit > target_droit) {
+            servo_angle_droit -= SERVO_RATE;
+            if (servo_angle_droit < target_droit) servo_angle_droit = target_droit;
+            Servo_SetAngleDroit(servo_angle_droit);
+        }
+
+        if (servo_angle_droit == 90 && !largage_droit_ok) {
+            largage_droit_ok = true;
+            xTaskNotifyGive(EspComHandle);  // ← idem
+        }
+        if (servo_angle_droit == 0) largage_droit_ok = false;
+
+        if (servo_angle_droit == target_droit) {
+            if (target_droit == 90 && !blink_done_droit) {
+                for (int i = 0; i < 5; i++) {
+                    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
+                    osDelay(100);
+                    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET); // ← SET/SET
+                    osDelay(100);
+                }
+                blink_done_droit = true;
+            }
+            if (target_droit == 0) blink_done_droit = false;
+        }
+
+        osDelay(SERVO_STEP_MS);
     }
 }
 
@@ -325,12 +433,13 @@ void ListeningNrf(void *argument)
             }
         }
         osMutexRelease(nrfMutex);
-        osDelay(10);
+
     	}
+    	osDelay(10);
     }
 }
 
-void DebugFifoNrf(void *argument)
+/*void DebugFifoNrf(void *argument)
 {
 	osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
     for (;;)
@@ -345,7 +454,7 @@ void DebugFifoNrf(void *argument)
 		HAL_GPIO_ReadPin(NRF_CE_GPIO_Port, NRF_CE_Pin));
 		vTaskDelay(pdMS_TO_TICKS(2000));
     }
-}
+}*/
 
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
 	if(huart->Instance==UART4){
@@ -355,49 +464,53 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
 	}
 }
 
-void GpsTask(void *argument) {
+
+void GpsTask(void *argument)
+{
     uint32_t size;
     memset(&pos_depart, 0, sizeof(pos_depart));
     bool home_is_set = false;
+
     InitGpsValues();
     osThreadFlagsWait(START_FLAG, osFlagsWaitAny, osWaitForever);
     HAL_UARTEx_ReceiveToIdle_DMA(&huart4, gps_data, PAYLOAD_GPS_SIZE);
     __HAL_DMA_DISABLE_IT(huart4.hdmarx, DMA_IT_HT);
     LOG_INFO("GPS START\r\n");
 
-    for(;;) {
-        if(xTaskNotifyWait(0, 0xFFFFFFFF, &size, pdMS_TO_TICKS(2000)) == pdPASS) {
+    for (;;) {
+        if (xTaskNotifyWait(0, 0xFFFFFFFF, &size, pdMS_TO_TICKS(2000)) == pdPASS) {
 
-            if(size > 0 && size < PAYLOAD_GPS_SIZE) {
+            if (size > 0 && size < PAYLOAD_GPS_SIZE) {
                 gps_data[size] = '\0';
-                if(strstr((char*)gps_data, "$GNGLL") || strstr((char*)gps_data, "$GPGLL"))
-                    ParseGPS_GLL((char*)gps_data);
-                else if(strstr((char*)gps_data, "$GNRMC") || strstr((char*)gps_data, "$GPRMC"))
-                    ParseGPS_RMC((char*)gps_data);
-                else {
-                    HAL_UARTEx_ReceiveToIdle_DMA(&huart4, gps_data, PAYLOAD_GPS_SIZE);
-                    __HAL_DMA_DISABLE_IT(huart4.hdmarx, DMA_IT_HT);
-                    osDelay(10);
-                    continue;
+
+                if (strstr((char*)gps_data, "$GNGGA") || strstr((char*)gps_data, "$GPGGA")) {
+                    ParseGPS_GGA((char*)gps_data);
                 }
 
-                if(gpsStructData.isValid) {
-                    KalmanUpdateGps(&kalman);
-                    LOG_INFO("%s\n\r", gps_data);
-                    if(!home_is_set && gpsStructData.latitude != 0.0f) {
-                        pos_depart.latitude  = gpsStructData.latitude;
-                        pos_depart.longitude = gpsStructData.longitude;
-                        home_is_set = true;
-                        LOG_INFO("HOME SET: %.6f, %.6f\r\n",
-                                  pos_depart.latitude, pos_depart.longitude);
-                    }
-                    if(home_is_set) {
-                        telem_distance = (uint16_t)GetDistanceHaversine(
-                        	    pos_depart.latitude,
-                        	    gpsStructData.latitude,
-                        	    pos_depart.longitude,
-                        	    gpsStructData.longitude
-                        	);;
+                if (strstr((char*)gps_data, "$GNRMC") || strstr((char*)gps_data, "$GPRMC")) {
+                    ParseGPS_RMC((char*)gps_data);
+
+                    if (gpsStructData.isValid) {
+                        GPS_ApplyFilter();
+                        KalmanUpdateGps(&kalman);
+
+                        if (!home_is_set) {
+                            pos_depart.latitude  = gpsStructData.latitude;
+                            pos_depart.longitude = gpsStructData.longitude;
+                            home_is_set = true;
+                            printf("HOME SET: %.6f, %.6f\n\r",
+                                   pos_depart.latitude, pos_depart.longitude);
+                        }
+
+                        if (home_is_set) {
+                            telem_distance = (uint16_t)GetDistanceHaversine(
+                                pos_depart.latitude,
+                                gpsStructData.latitude,
+                                pos_depart.longitude,
+                                gpsStructData.longitude
+                            );
+                            printf("DISTANCE = %u\n\r", telem_distance);
+                        }
                     }
                 }
             }
@@ -438,13 +551,14 @@ void WatchDogNrfTask(void *argument){
 			);
 		if(!(flags & CMD_ALIVE_FLAG)){
 			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_8);
-			ESC_SetThrottle_D(1500); //Passage au neutre pour éviter que le bateau avance tout seul
-			ESC_SetThrottle_G(1500);
+			//ESC_SetThrottle_D(PWM_NEUTRAL); //Passage au neutre pour éviter que le bateau avance tout seul
+			//ESC_SetThrottle_G(PWM_NEUTRAL);
 			nrfConnected = 0;
 			timer_home++;
 			if(timer_home>TIME_BEFORE_HOME && !homeReturn){
 				xTaskNotifyGive(ReturnHomeHandle);
-				homeReturn = 1;
+				//homeReturn = 1;
+				homeReturn = 0;
 				timer_home=0;
 			}
 		}
@@ -463,11 +577,8 @@ void BatteryTask(void *argument){
     static float    remaining_mah = BAT_CAPACITY_MAH;
     static uint32_t last_tick     = 0;
     last_tick = osKernelGetTickCount();
-
-    // Lancement propre, une seule fois
     HAL_StatusTypeDef st = HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, NUMBER_CAPTURE * 2);
-    LOG_INFO("ADC DMA start: %d\r\n", st);  // doit afficher 0
-
+    LOG_INFO("ADC DMA start: %d\r\n", st);
     LOG_INFO("BATTERIE\n\r");
     for(;;){
         if(ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)) > 0)
@@ -509,25 +620,50 @@ void BatteryTask(void *argument){
 }
 
 
+#define HOME_TIMEOUT_MS   120000   // 2 minutes max
+#define KD_HEADING        0.05f    // À ajuster selon comportement
+
 void ReturnToHomeTask(void *argument)
 {
+    float current_speed_g = 0.0f;
+    float current_speed_d = 0.0f;
+
     for(;;)
     {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        static float current_speed_g = 0.0f;
-        static float current_speed_d = 0.0f;
+
+        // Reset à chaque déclenchement
+        current_speed_g = 0.0f;
+        current_speed_d = 0.0f;
+
+        uint32_t home_start_tick = HAL_GetTick();
+        float    last_error      = 0.0f;
+        TickType_t last_time     = xTaskGetTickCount();
+
         while(homeReturn)
         {
+            // Timeout global
+            if (HAL_GetTick() - home_start_tick > HOME_TIMEOUT_MS) {
+                LOG_INFO("RTH: timeout\r\n");
+                homeReturn = 0;
+                break;
+            }
+
+            // GPS invalide → stop et attente
+            if (!gpsStructData.isValid) {
+                ESC_SetThrottle_G(PWM_NEUTRAL);
+                ESC_SetThrottle_D(PWM_NEUTRAL);
+                osDelay(500);
+                continue;
+            }
+
             float distance = GetDistanceHaversine(
                 gpsStructData.latitude,  gpsStructData.longitude,
                 pos_depart.latitude,     pos_depart.longitude
             );
 
-            if(distance < 2.0f)
-            {
-                ESC_SetThrottle_G(PWM_NEUTRAL);
-                ESC_SetThrottle_D(PWM_NEUTRAL);
-                LOG_INFO("HOME ATTEINT\r\n");
+            if(distance < 2.0f) {
+                LOG_INFO("RTH: home atteint\r\n");
                 homeReturn = 0;
                 break;
             }
@@ -537,14 +673,21 @@ void ReturnToHomeTask(void *argument)
                 pos_depart.latitude,     pos_depart.longitude
             );
 
-            float error = bearing - kalman.cap;
-            error = NormalizeAngle180(error);
-            float steering = error * KP_HEADING;
-            if(steering >  1.0f) steering =  1.0f;
-            if(steering < -1.0f) steering = -1.0f;
+            float error = NormalizeAngle180(bearing - kalman.cap);
+
+            // PD sur le cap
+            TickType_t now = xTaskGetTickCount();
+            float angular_speed = GetAngularSpeed(last_error, error, last_time, now);
+            float steering = (error * KP_HEADING) - (angular_speed * KD_HEADING);
+            steering = fmaxf(-1.0f, fminf(1.0f, steering));
+
+            last_error = error;
+            last_time  = now;
+
             float throttle = HOME_THROTTLE;
             if(distance < 10.0f)
-                throttle = HOME_THROTTLE * (distance / 10.0f);
+                throttle *= (distance / 10.0f);
+
             float target_g = throttle + (steering * TURN_SENSITIVITY);
             float target_d = throttle - (steering * TURN_SENSITIVITY);
 
@@ -557,8 +700,8 @@ void ReturnToHomeTask(void *argument)
             current_speed_g = Smooth_Transition(current_speed_g, target_g);
             current_speed_d = Smooth_Transition(current_speed_d, target_d);
 
-            ESC_SetThrottle_G(Float_To_PWM(current_speed_g * MOTOR_LEFT_CORRECTION));
-            ESC_SetThrottle_D(Float_To_PWM(current_speed_d * MOTOR_RIGHT_CORRECTION));
+            ESC_SetThrottle_G(Float_To_PWM(current_speed_g));
+            ESC_SetThrottle_D(Float_To_PWM(current_speed_d));
 
             LOG_INFO("DIST=%.1fm | BRG=%.1f | CAP=%.1f | ERR=%.1f | ST=%.2f\r\n",
                      distance, bearing, kalman.cap, error, steering);
